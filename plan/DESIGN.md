@@ -481,7 +481,7 @@ examples/
 script/        update_subtree.ps1
 build.ps1      -Task Test | Analyze | Package | Publish
 install.ps1
-.github/workflows/ci.yml
+.github/workflows/release.yml
 PSScriptAnalyzerSettings.psd1
 README.md
 ```
@@ -492,7 +492,7 @@ README.md
 - `install.ps1`: copies the module to the user's module path for 5.1 and 7, or for 7 on Linux and macOS.
 - `Publish`: `Publish-Module` to the PowerShell Gallery, key from `$env:PSGALLERY_KEY`.
 - `script/update_subtree.ps1`: updates the `psdutil` branch from `src/PsdUtil`, then you push it. Same as `nsl_pp`.
-- CI: Windows on `powershell` and `pwsh`, Linux and macOS on `pwsh`.
+- `release.yml`: on a tag like `v0.1.0`, checks it matches `ModuleVersion`, packages the zip and makes a GitHub release. No tests run in GitHub; run `./build.ps1` before tagging.
 
 ### Using it as a submodule
 

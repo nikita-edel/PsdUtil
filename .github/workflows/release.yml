@@ -1,0 +1,33 @@
+name: Release
+
+# Push a tag like v0.1.0 to make a GitHub release with the module zip.
+# No tests run here. Run ./build.ps1 locally before tagging.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the module version
+        run: |
+          $version = (Import-PowerShellDataFile ./src/PsdUtil/PsdUtil.psd1).ModuleVersion
+          if ('${{ github.ref_name }}' -ne "v$version") { throw "Tag ${{ github.ref_name }} doesn't match ModuleVersion $version." }
+
+      - name: Package
+        run: ./build.ps1 -Task Package
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ github.ref_name }}' dist/*.zip --title '${{ github.ref_name }}' --generate-notes

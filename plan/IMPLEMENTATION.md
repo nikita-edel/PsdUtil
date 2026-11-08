@@ -4,7 +4,7 @@ How it gets built, in order. What it has to do is in `DESIGN.md`.
 
 Each step ends with something that can be run and tested. No step starts until the one before passes on both 5.1 and 7.
 
-**Status: all 11 steps are done.** 157 tests pass on PowerShell 5.1 and 7.6, code coverage is 83%, PSScriptAnalyzer finds nothing. Linux and macOS run in CI only; they weren't tested locally.
+**Status: all 11 steps are done.** 157 tests pass on PowerShell 5.1 and 7.6, code coverage is 83%, PSScriptAnalyzer finds nothing. Tests run locally only, so Linux and macOS are untested.
 
 ## Rules while building
 
@@ -65,9 +65,9 @@ The reader, resolver and schema grew most: they hold the directive checks, the s
 
 ### 1. Skeleton
 
-Build: repo layout, module manifest, `build.ps1`, CI, a test file with one case per error code that compares the code it gets.
+Build: repo layout, module manifest, `build.ps1`, a release workflow, a test file with one case per error code that compares the code it gets.
 
-Done when: an empty module imports on 5.1 and 7, and CI runs on Windows, Linux and macOS.
+Done when: an empty module imports on 5.1 and 7.
 
 ### 2. Reading and errors
 
