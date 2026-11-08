@@ -75,8 +75,12 @@ function Test-PsdMergePattern {
 # schema rule, else $null.
 function Get-PsdDefaultOp {
     param($M, $Keys, $Rule)
-    foreach ($d in @($M['Defaults'])) {
-        if ($null -ne $d -and (Test-PsdMergePattern $d.Pattern 0 $Keys 0)) { return $d.Op }
+    # a generic list, @() on it fails
+    $defaults = $M['Defaults']
+    if ($null -ne $defaults) {
+        foreach ($d in $defaults) {
+            if (Test-PsdMergePattern $d.Pattern 0 $Keys 0) { return $d.Op }
+        }
     }
     if ($null -ne $Rule -and $Rule['Merge']) { return $Rule['Merge'] }
     $null
