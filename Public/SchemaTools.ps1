@@ -67,6 +67,10 @@ function New-PsdType {
     copied. Value types are [Nullable[T]], so properties you don't set stay $null.
     Use the file with: using module ./App.Types.psm1
 
+    A class made from a map, like [App]@{ ... }, keeps that map. Keys starting with ! and keys ending
+    in a merge operator are allowed in it, and Export-Psd, ConvertTo-Psd, Merge-Psd and -Override use
+    it, so the file holds what was written. Any other key that isn't a property throws.
+
     .PARAMETER Name
     The name of the top-level class. Nested classes are named after it: App, AppServer, ...
 

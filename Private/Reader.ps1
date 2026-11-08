@@ -29,6 +29,8 @@ function New-PsdFileRec {
         Schema    = $null
         Types     = New-PsdList
         Synthetic = $false
+        Named     = $false
+        Label     = $null
     }
 }
 
@@ -485,6 +487,12 @@ function Read-PsdDirective {
                 return
             }
             $File.Ns = $Value.V
+            if ($File.Synthetic) {
+                $File.Name = $Value.V
+                $File.Label = $Value.V
+                $File.Named = $true
+                $File.Path = [IO.Path]::Combine($File.Dir, "($($Value.V))")
+            }
         }
     }
 }
@@ -499,11 +507,21 @@ function New-PsdSyntheticFile {
     $rec.Ext = ''
     $rec.Ns = $Name
     $rec.Synthetic = $true
+    $rec.Label = "the $Name"
     $rec
 }
 
+# The map a generated class was made from, or $null.
+function Get-PsdKeptMap {
+    param($Value)
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [System.Collections.IEnumerable]) { return $null }
+    $prop = $Value.GetType().GetProperty('__PsdMap')
+    if ($null -eq $prop) { return $null }
+    $prop.GetValue($Value, $null)
+}
+
 function ConvertFrom-PsdObject {
-    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0)
+    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName)
     if ($Depth -gt $Ctx.Limits.MaxDepth) {
         Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $File
         return (New-PsdNode 'S' $null $File $null $Path)
@@ -519,6 +537,10 @@ function ConvertFrom-PsdObject {
             if ($kc.Kind -eq 'Plain' -or $kc.Kind -eq 'Op') { $childPath = Join-PsdPath $Path $kc.Name }
             $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1)
             if ($kc.Kind -eq 'Dir') {
+                if ($AllowName -and $Depth -eq 0 -and $kc.Name -eq '!name') {
+                    Read-PsdDirective $File '!name' $child $kinfo $Ctx
+                    continue
+                }
                 Add-PsdError $Ctx 'PSD206' "'$($kc.Name)' only works in files." -File $File -Key ([string]$k)
                 continue
             }
@@ -535,7 +557,9 @@ function ConvertFrom-PsdObject {
     if ($Value -is [System.Management.Automation.PSCustomObject]) {
         $map = [ordered]@{}
         foreach ($p in $Value.PSObject.Properties) { $map[$p.Name] = $p.Value }
-        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth)
+        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth -AllowName:$AllowName)
     }
+    $kept = Get-PsdKeptMap $Value
+    if ($null -ne $kept) { return (ConvertFrom-PsdObject $kept $File $Ctx $Path $Depth -AllowName:$AllowName) }
     New-PsdNode 'S' $Value $File $null $Path
 }

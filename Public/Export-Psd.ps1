@@ -4,7 +4,7 @@ function Export-Psd {
     Writes an object to a .psd1 file.
 
     .DESCRIPTION
-    Same output as ConvertTo-Psd, written as UTF-8. Set Bom = $true in -Format for a byte order mark.
+    Same output as ConvertTo-Psd, including the kept map of a generated class, written as UTF-8. Set Bom = $true in -Format for a byte order mark.
     On Windows PowerShell 5.1, Import-PowerShellDataFile misreads non-ASCII characters in files
     without one. PsdUtil reads both correctly.
 

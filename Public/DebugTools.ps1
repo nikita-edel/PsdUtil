@@ -47,7 +47,7 @@ function Get-PsdProvenance {
         [Parameter(Position = 1)]
         [string[]] $Key,
 
-        [System.Collections.IDictionary] $Override
+        [object] $Override
     )
     $r = Invoke-PsdLoad -Path $Path -Override $Override -Prov
     if ($r.Ctx.Errors.Count -gt 0) { Write-PsdResult $PSCmdlet $r.Ctx ([IO.Path]::GetFileName($Path)); return }
@@ -70,7 +70,7 @@ function Resolve-PsdReference {
         [Parameter(Mandatory, Position = 1)]
         [string] $Key,
 
-        [System.Collections.IDictionary] $Override
+        [object] $Override
     )
     $ctx = New-PsdContext
     $entry = Read-PsdFile (Resolve-PsdUserPath $Path) $ctx

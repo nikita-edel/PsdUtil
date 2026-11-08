@@ -99,7 +99,7 @@ function Format-PsdErrorText {
     $head = $Info.Message
     if ($Info.File) {
         $leaf = $Info.File.Name + $Info.File.Ext
-        if ($Info.File.Synthetic) { $leaf = "the $($Info.File.Name)" }
+        if ($Info.File.Synthetic) { $leaf = $Info.File.Label }
         if ($Info.Line -gt 0) { $head = "$leaf, line $($Info.Line): $head" } else { $head = "${leaf}: $head" }
     }
     elseif ($head.Length -gt 0) { $head = $head.Substring(0, 1).ToUpperInvariant() + $head.Substring(1) }

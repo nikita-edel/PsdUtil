@@ -8,6 +8,8 @@ function ConvertTo-Psd {
     Dates are written as ISO-8601 text, Guid, Version and Uri as text, enums by name.
     Other objects become a map of their public properties. Script blocks and secure strings
     can't be written. Text containing !< is escaped as !!<, so the file reads back the same.
+    An object from a generated class that was made from a map is written as that map, exactly as
+    it was given, so '!if', merge operators and references stay.
 
     .PARAMETER Format
     A map of format options. Defaults:

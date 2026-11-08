@@ -52,8 +52,9 @@ function Get-PsdNewLine {
 }
 
 function Format-PsdString {
-    param([string] $Value, $Format)
-    $v = $Value.Replace('!<', '!!<')
+    param([string] $Value, $Format, [bool] $Raw = $false)
+    $v = $Value
+    if (-not $Raw) { $v = $Value.Replace('!<', '!!<') }
     if ($Format.Quote -eq 'Double') {
         $sb = New-Object System.Text.StringBuilder
         [void]$sb.Append('"')
@@ -85,17 +86,20 @@ function Format-PsdKeyOut {
         Add-PsdError $S.Ctx 'PSD603' "a key of type $($Key.GetType().Name) at $($S.Path) can't be written. Keys have to be text."
         return $null
     }
-    if ($script:PsdRxOp.IsMatch($k)) {
-        Add-PsdError $S.Ctx 'PSD603' "the key '$k' at $($S.Path) ends in a merge operator, so it would be read back as one."
-        return $null
+    $raw = [bool]$S['Raw']
+    if (-not $raw) {
+        if ($script:PsdRxOp.IsMatch($k)) {
+            Add-PsdError $S.Ctx 'PSD603' "the key '$k' at $($S.Path) ends in a merge operator, so it would be read back as one."
+            return $null
+        }
+        if ([regex]::IsMatch($k, '(?<!!)!<')) {
+            Add-PsdError $S.Ctx 'PSD603' "the key '$k' at $($S.Path) contains !<, which keys can't have."
+            return $null
+        }
+        if ($k.StartsWith('!')) { $k = '!' + $k }
     }
-    if ([regex]::IsMatch($k, '(?<!!)!<')) {
-        Add-PsdError $S.Ctx 'PSD603' "the key '$k' at $($S.Path) contains !<, which keys can't have."
-        return $null
-    }
-    if ($k.StartsWith('!')) { $k = '!' + $k }
     if ($script:PsdRxBareKey.IsMatch($k)) { return $k }
-    Format-PsdString $k @{ Quote = 'Single' }
+    Format-PsdString $k @{ Quote = 'Single' } $raw
 }
 
 function Test-PsdScalarOut {
@@ -109,7 +113,7 @@ function Format-PsdScalarOut {
     param($Value, $S)
     if ($null -eq $Value) { return '$null' }
     if ($Value -is [bool]) { if ($Value) { return '$true' } return '$false' }
-    if ($Value -is [string]) { return (Format-PsdString $Value $S.Format) }
+    if ($Value -is [string]) { return (Format-PsdString $Value $S.Format $S.Raw) }
     if ($Value -is [char]) { return (Format-PsdString ([string]$Value) $S.Format) }
     if ($Value -is [double] -or $Value -is [single]) {
         $d = [double]$Value
@@ -159,6 +163,12 @@ function Split-PsdObject {
         foreach ($x in $Value) { $items.Add($x) }
         return @{ Kind = 'list'; Items = $items }
     }
+    $kept = Get-PsdKeptMap $Value
+    if ($null -ne $kept) {
+        $pairs = New-PsdList
+        foreach ($k in $kept.PSBase.Keys) { $pairs.Add(([object[]]($k, $kept[$k]))) }
+        return @{ Kind = 'map'; Pairs = $pairs; Raw = $true }
+    }
     $base = $Value
     if ($Value -is [psobject]) { $base = $Value.PSObject.BaseObject }
     $isCustom = $Value -is [System.Management.Automation.PSCustomObject]
@@ -176,6 +186,7 @@ function Split-PsdObject {
         $S.Ctx.Warnings.Add("$($S.Path) is a $($base.GetType().Name) with no properties, so it was written as text.")
         return @{ Kind = 'scalar'; Value = $Value.ToString() }
     }
+    if ($isClass) { return @{ Kind = 'map'; Pairs = $pairs; Raw = $false } }
     @{ Kind = 'map'; Pairs = $pairs }
 }
 
@@ -192,6 +203,8 @@ function Write-PsdValueText {
         return '$null'
     }
     $S.Stack.Add($Value)
+    $wasRaw = $S.Raw
+    if ($parts.ContainsKey('Raw')) { $S.Raw = $parts.Raw }
     try {
         $f = $S.Format
         $nl = $S.NL
@@ -234,12 +247,15 @@ function Write-PsdValueText {
         $S.Path = $here
         return '@{' + $nl + ($lines -join $nl) + $nl + $endPad + '}'
     }
-    finally { $S.Stack.RemoveAt($S.Stack.Count - 1) }
+    finally {
+        $S.Stack.RemoveAt($S.Stack.Count - 1)
+        $S.Raw = $wasRaw
+    }
 }
 
 function ConvertTo-PsdTextInternal {
     param($Value, $Format, [int] $Depth, $Ctx)
-    $S = @{ Ctx = $Ctx; Format = $Format; Depth = $Depth; Stack = (New-PsdList); Path = '(top)'; NL = (Get-PsdNewLine $Format) }
+    $S = @{ Ctx = $Ctx; Format = $Format; Depth = $Depth; Stack = (New-PsdList); Path = '(top)'; NL = (Get-PsdNewLine $Format); Raw = $false }
     Write-PsdValueText $Value $S 0
 }
 
