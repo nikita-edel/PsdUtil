@@ -170,6 +170,8 @@ function Read-PsdFile {
 # Reads a file through -Loader: what it returns is the file, a map or a generated class made from one. Its
 # directives ('!merge', '!include', '!name', '!schema') work as in a .psd1, paths relative to the file's folder.
 function Read-PsdLoadedFile {
+    # From is used inside the error script block below.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'From')]
     param([string] $Full, $Ctx, $From)
     $rec = New-PsdFileRec $Full $null
     $Ctx.Files[$rec.Key] = $rec
