@@ -1,6 +1,6 @@
 # PsdUtil
 
-Reads, writes, merges and checks PowerShell data files (`.psd1`) for configuration. Data files never run code, every file stays a valid `.psd1`, and it works on Windows PowerShell 5.1 and PowerShell 7.
+Reads, writes, merges and checks PowerShell data files (`.psd1`) for configuration. 
 
 ```powershell
 # base.psd1
@@ -56,27 +56,5 @@ Every command has help: `Get-Help Import-Psd -Full`. The full design is in [plan
 
 ## Install
 
-From a release zip: unpack it and run `./install.ps1`. It copies the module to your user module folder, for both 5.1 and 7 on Windows.
-
-As a git submodule: the `psdutil` branch has only the module, made with `script/update_subtree.ps1`.
-
-```
-[submodule "src/PsdUtil"]
-    path = src/PsdUtil
-    url = git@github.com:nikita-edel/PsdUtil.git
-    branch = psdutil
-```
-
-Then put `src` on the module path once, and import by name:
-
-```powershell
-$env:PSModulePath = "$PSScriptRoot/src" + [IO.Path]::PathSeparator + $env:PSModulePath
-Import-Module PsdUtil
-```
-
-## Develop
-
-```powershell
-./build.ps1                       # tests (Pester 5+) and PSScriptAnalyzer
-./build.ps1 -Task Package         # dist/PsdUtil-<version>.zip
-```
+From a release zip: unpack it and run `./install.ps1`. It copies the module to your user module folder, for both 5.1 and 7 on Windows.<br>
+PsGallery: `Install-Module PsdUtil`

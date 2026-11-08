@@ -1,11 +1,15 @@
 name: Release
 
-# Push a tag like v0.1.0 to make a GitHub release with the module zip.
-# No tests run here. Run ./build.ps1 locally before tagging.
+# Releases the latest tag: publishes the module to the PowerShell Gallery, then creates a
+# GitHub release titled with the tag. The release text is what was added to CHANGELOG.txt
+# since the latest release. No tests run here; run ./build.ps1 before tagging.
+#
+# Needs the repository secret PSGALLERY_KEY.
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,18 +20,44 @@ jobs:
     defaults:
       run:
         shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check the tag matches the module version
+      - name: Find the latest tag
         run: |
+          $tag = git tag --list 'v*' --sort=-v:refname | Select-Object -First 1
+          if (-not $tag) { throw 'There is no v* tag to release.' }
+          git checkout --quiet $tag
           $version = (Import-PowerShellDataFile ./src/PsdUtil/PsdUtil.psd1).ModuleVersion
-          if ('${{ github.ref_name }}' -ne "v$version") { throw "Tag ${{ github.ref_name }} doesn't match ModuleVersion $version." }
+          if ($tag -ne "v$version") { throw "Tag $tag doesn't match ModuleVersion $version." }
+          "TAG=$tag" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Write the release text from CHANGELOG.txt
+        run: |
+          $last = gh release view --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -ne 0) { $last = $null }
+          if ($last) {
+              $lines = git diff $last $env:TAG -- CHANGELOG.txt |
+                  Where-Object { $_ -match '^\+' -and $_ -notmatch '^\+\+\+' } |
+                  ForEach-Object { $_.Substring(1) }
+          }
+          else { $lines = Get-Content CHANGELOG.txt }
+          if (-not ($lines -join '').Trim()) { throw "CHANGELOG.txt has no changes since $last." }
+          $lines | Set-Content -Encoding utf8 notes.txt
+          Get-Content notes.txt
+          $global:LASTEXITCODE = 0
 
       - name: Package
         run: ./build.ps1 -Task Package
 
-      - name: Create the release
+      - name: Publish to the PowerShell Gallery
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' dist/*.zip --title '${{ github.ref_name }}' --generate-notes
+          PSGALLERY_KEY: ${{ secrets.PSGALLERY_KEY }}
+        run: ./build.ps1 -Task Publish
+
+      - name: Create the GitHub release
+        run: gh release create $env:TAG dist/*.zip --title $env:TAG --notes-file notes.txt --verify-tag

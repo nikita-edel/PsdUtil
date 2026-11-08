@@ -483,6 +483,7 @@ build.ps1      -Task Test | Analyze | Package | Publish
 install.ps1
 .github/workflows/release.yml
 PSScriptAnalyzerSettings.psd1
+CHANGELOG.txt
 README.md
 ```
 
@@ -492,7 +493,7 @@ README.md
 - `install.ps1`: copies the module to the user's module path for 5.1 and 7, or for 7 on Linux and macOS.
 - `Publish`: `Publish-Module` to the PowerShell Gallery, key from `$env:PSGALLERY_KEY`.
 - `script/update_subtree.ps1`: updates the `psdutil` branch from `src/PsdUtil`, then you push it. Same as `nsl_pp`.
-- `release.yml`: on a tag like `v0.1.0`, checks it matches `ModuleVersion`, packages the zip and makes a GitHub release. No tests run in GitHub; run `./build.ps1` before tagging.
+- `release.yml`: releases the latest `v*` tag, on a tag push or by hand. It checks the tag matches `ModuleVersion`, publishes to the PowerShell Gallery with the repository secret `PSGALLERY_KEY`, then creates a GitHub release titled with the tag. The text is what was added to `CHANGELOG.txt` since the latest release, or the whole file for the first one. No tests run in GitHub; run `./build.ps1` before tagging.
 
 ### Using it as a submodule
 
