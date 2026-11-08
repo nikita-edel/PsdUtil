@@ -6,6 +6,9 @@ function Test-Psd {
     .PARAMETER Raw
     Also checks each file of the chain on its own against the schema (without Required).
 
+    .PARAMETER Include
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
+
     .EXAMPLE
     Test-Psd ./app.psd1 -Schema ./app.schema.psd1
     #>
@@ -20,12 +23,14 @@ function Test-Psd {
 
         [object] $Override,
 
+        [System.Collections.IDictionary] $Include,
+
         [switch] $Raw,
 
         [System.Collections.IDictionary] $Limits
     )
     process {
-        $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Raw:$Raw -Limits $Limits
+        $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Include $Include -Raw:$Raw -Limits $Limits
         $r.Ctx.Errors.Count -eq 0
     }
 }
