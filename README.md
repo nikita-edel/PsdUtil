@@ -32,14 +32,14 @@ $config.Plugins         # core, cache
 
 ## What's in it
 
-- **References:** `!<Server.Port>`, fallbacks `!<A ?? "x">`, optional `!<?A>`, `!<env:NAME>`, built-ins `@name`, `@file`, `@dir`, `@os`, and [filters](plan/filters.md) like `!<Name | lower>`.
+- **References:** `!<Server.Port>`, fallbacks `!<A ?? "x">`, optional `!<?A>`, `!<env:NAME>`, built-ins `@name`, `@file`, `@dir`, `@os`, and [filters](doc/usage.md#filters) like `!<Name | lower>`.
 - **Merging and including:** `'!merge'` and `'!include'` with paths and globs, namespaces like `!<base::Port>` and `!<this::@name>`, and the operators `+=`, `=+`, `|=`, `-=`, `:=`.
 - **Conditions:** `'!if !<Stage> -eq "prod"' = @{ ... }`.
 - **Schemas** written as `.psd1`, with types, enums, patterns, ranges and required keys. Errors name the file, line and key, underline the problem and suggest a fix.
 - **Writing:** `ConvertTo-Psd`, `Export-Psd`, and `Update-Psd` and `Format-Psd`, which keep comments.
 - **Typed configs:** `New-PsdType` writes classes from a schema, for autocomplete in config scripts.
 
-Every command has help: `Get-Help Import-Psd -Full`. The full design is in [plan/DESIGN.md](plan/DESIGN.md), working examples are in [plan/examples](plan/examples).
+Every command has help: `Get-Help Import-Psd -Full`. The full guide is in [doc/usage.md](doc/usage.md).
 
 | Command | Purpose |
 |---|---|

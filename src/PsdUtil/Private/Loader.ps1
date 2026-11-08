@@ -153,7 +153,7 @@ function Register-PsdNs {
             $old = $table[$Ns]
             $oldKey = if ($old.ContainsKey('Entry')) { $old.Entry.Key } else { $old.Key }
             if ($oldKey -ne $TargetKey) {
-                $msg = "two different files are both called '$Ns', so $Ns:: can't tell them apart."
+                $msg = "two different files or maps are both called '$Ns', so $Ns:: can't tell them apart."
                 if ($Node) { Add-PsdNodeError $Ctx 'PSD203' $msg $Node -Hint @("Give one of them its own name with '!name' = '...'") }
                 else { Add-PsdError $Ctx 'PSD203' $msg -Hint @("Give one of them its own name with '!name' = '...'") }
             }
@@ -177,14 +177,45 @@ function Get-PsdIncludedDoc {
     $doc
 }
 
+# Maps from the caller, readable as name::Key like an included file.
+function Add-PsdMapIncludes {
+    param($Doc, $Include, $Ctx)
+    foreach ($key in @($Include.PSBase.Keys)) {
+        $name = [string]$key
+        $value = $Include[$key]
+        if ($name -ieq 'this') {
+            Add-PsdError $Ctx 'PSD204' "'this' can't be a name in -Include, because this:: always means the file it's written in."
+            continue
+        }
+        if ($name -notmatch '^[^\s"<>|?()\[\],:@!]+$') {
+            Add-PsdError $Ctx 'PSD206' "'$name' can't be a name in -Include. Names can't have spaces or signs like :, @ or !."
+            continue
+        }
+        if (-not ($value -is [System.Collections.IDictionary] -or $value -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $value))) {
+            Add-PsdError $Ctx 'PSD206' "-Include needs a map for '$name', but it's $(Get-PsdKindText $value)."
+            continue
+        }
+        $f = New-PsdSyntheticFile $name $Doc.Entry.Dir
+        $f.Label = $name
+        $f.Named = $true
+        $f.Root = ConvertFrom-PsdObject $value $f $Ctx ''
+        $layers = New-PsdList
+        $layers.Add(@{ File = $f; Only = $null; Root = $null })
+        $idoc = New-PsdDoc $f $layers $Ctx
+        $Ctx.Docs[$f.Key] = $idoc
+        Register-PsdNs $Doc $name $f $f.Key $null $Ctx
+        if (-not $Doc.Ns.ContainsKey($name) -and -not $Doc.Inc.ContainsKey($name)) { $Doc.Inc[$name] = $idoc }
+    }
+}
+
 function New-PsdDoc {
-    param($Entry, $Layers, $Ctx, [bool] $Prov = $false)
+    param($Entry, $Layers, $Ctx, [bool] $Prov = $false, $Include = $null)
     $Ctx.DocStack.Add($Entry)
     $doc = New-PsdDocObject $Entry $Layers $Ctx
     if ($Prov) { $doc.Prov = @{} }
     foreach ($l in $Layers) {
         $f = $l.File
-        if ($f.Synthetic) { continue }
+        if ($f.Synthetic -and -not $f.Named) { continue }
         Register-PsdNs $doc $f.Ns $f $f.Key $null $Ctx
         if (-not $doc.Ns.ContainsKey($f.Ns) -and -not $doc.Inc.ContainsKey($f.Ns) -and $f.Ns -ine 'this') { $doc.Ns[$f.Ns] = $f }
     }
@@ -200,6 +231,7 @@ function New-PsdDoc {
             }
         }
     }
+    if ($null -ne $Include) { Add-PsdMapIncludes $doc $Include $Ctx }
     $Ctx.DocStack.RemoveAt($Ctx.DocStack.Count - 1)
 
     # Conditions are decided against everything except the !if bodies.
@@ -279,12 +311,16 @@ function Get-PsdAllTree {
 
 # Builds the document for a file, with an optional extra layer on top.
 function New-PsdFileDoc {
-    param($Entry, $Ctx, $Override = $null, [switch] $Prov)
+    param($Entry, $Ctx, $Override = $null, [switch] $Prov, $Include = $null)
     $layers = Get-PsdLayers $Entry $Ctx
     if ($null -ne $Override) {
+        if (-not ($Override -is [System.Collections.IDictionary] -or $null -ne (Get-PsdKeptMap $Override))) {
+            Add-PsdError $Ctx 'PSD206' "-Override needs a map, or a generated class made from one, but it's $(Get-PsdKindText $Override)."
+            $Override = @{}
+        }
         $of = New-PsdSyntheticFile 'override' $Entry.Dir
         $of.Root = ConvertFrom-PsdObject $Override $of $Ctx ''
         $layers.Add(@{ File = $of; Only = $null; Root = $null })
     }
-    New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent
+    New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent $Include
 }

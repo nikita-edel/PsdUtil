@@ -373,7 +373,7 @@ function Test-PsdValueRule {
                 if ($props[$k].Required -and -not $Value.Contains($k)) {
                     $cp = Join-PsdPath $Path $k
                     $files = New-PsdList
-                    if ($Doc) { for ($i = $Doc.Layers.Count - 1; $i -ge 0; $i--) { $f = $Doc.Layers[$i].File; if (-not $f.Synthetic) { $files.Add($f.Name + $f.Ext) } } }
+                    if ($Doc) { for ($i = $Doc.Layers.Count - 1; $i -ge 0; $i--) { $f = $Doc.Layers[$i].File; if (-not $f.Synthetic -or $f.Named) { $files.Add($f.Name + $f.Ext) } } }
                     $file = $null
                     if ($Doc) { $file = $Doc.Entry }
                     $extra = @()

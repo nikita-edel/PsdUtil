@@ -1,11 +1,7 @@
 0.1.0
 
-- First release.
-- Import-Psd, ConvertFrom-Psd: references, fallbacks, built-ins, env:, filters.
-- !merge and !include with globs and namespaces, merge operators +=, =+, |=, -=, :=.
-- !if conditions.
-- Schemas written as .psd1, with enums from !types.
-- ConvertTo-Psd, Export-Psd, Update-Psd and Format-Psd, which keep comments.
-- Merge-Psd, Test-Psd, Get-PsdError, Test-PsdSchema, Add-PsdDefault, New-PsdSchema.
-- Test-PsdKey, Get-PsdMissingKey, Assert-PsdKey, Get-, Set- and Remove-PsdValue.
-- New-PsdType, Compare-Psd, Get-PsdProvenance, Resolve-PsdReference.
+- initial release
+- -Include on Import-Psd, ConvertFrom-Psd and Merge-Psd: maps from the caller, read as !<name::Key>
+- '!name' in maps given to Merge-Psd
+- -Schema on Merge-Psd
+- Generated classes made from a map keep it, so typed configs can use references, merge operators and !if

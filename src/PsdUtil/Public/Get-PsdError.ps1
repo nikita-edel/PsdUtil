@@ -27,7 +27,7 @@ function Get-PsdError {
         [string] $Schema,
 
         [Parameter(ParameterSetName = 'File')]
-        [System.Collections.IDictionary] $Override,
+        [object] $Override,
 
         [Parameter(ParameterSetName = 'File')]
         [switch] $Raw,

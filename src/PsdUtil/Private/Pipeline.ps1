@@ -23,6 +23,21 @@ function Resolve-PsdDoc {
     , $v
 }
 
+# Checks a merged document against a schema file.
+function Test-PsdDocSchema {
+    param($Value, $Doc, [string] $SchemaPath, $From, $Ctx, [bool] $Raw = $false)
+    $rules = Import-PsdSchemaRules $SchemaPath $Ctx $From
+    if ($null -eq $rules) { return }
+    Test-PsdValueRule $Value $Doc.Tree $rules '' $Ctx $Doc
+    if (-not $Raw) { return }
+    foreach ($l in $Doc.Layers) {
+        if ($l.File.Synthetic) { continue }
+        $own = Get-PsdOwnTree $Doc $l.File
+        $ov = Get-PsdNodeValue $own $Doc
+        Test-PsdValueRule $ov $own $rules '' $Ctx $Doc -NoRequired
+    }
+}
+
 # Loads a file or text. Returns @{ Ctx; Doc; Value; Entry }. Value is $null on errors.
 function Invoke-PsdLoad {
     param(
@@ -31,7 +46,8 @@ function Invoke-PsdLoad {
         [string] $BasePath,
         [string] $Name = 'input',
         [string] $Schema,
-        [System.Collections.IDictionary] $Override,
+        $Override,
+        [System.Collections.IDictionary] $Include,
         [string] $Unresolved = 'Error',
         [System.Collections.IDictionary] $Limits,
         [switch] $Raw,
@@ -52,7 +68,7 @@ function Invoke-PsdLoad {
     }
     $result.Entry = $entry
     if ($null -eq $entry -or $null -eq $entry.Root) { return $result }
-    $doc = New-PsdFileDoc $entry $Ctx $Override -Prov:$Prov
+    $doc = New-PsdFileDoc $entry $Ctx $Override -Prov:$Prov -Include $Include
     $result.Doc = $doc
     $value = Resolve-PsdDoc $doc
 
@@ -64,18 +80,7 @@ function Invoke-PsdLoad {
         $schemaFrom = $entry.Schema.Node
     }
     if ($schemaPath -and -not $SchemaMode -and $Ctx.Errors.Count -eq 0) {
-        $rules = Import-PsdSchemaRules $schemaPath $Ctx $schemaFrom
-        if ($null -ne $rules) {
-            Test-PsdValueRule $value $doc.Tree $rules '' $Ctx $doc
-            if ($Raw) {
-                foreach ($l in $doc.Layers) {
-                    if ($l.File.Synthetic) { continue }
-                    $own = Get-PsdOwnTree $doc $l.File
-                    $ov = Get-PsdNodeValue $own $doc
-                    Test-PsdValueRule $ov $own $rules '' $Ctx $doc -NoRequired
-                }
-            }
-        }
+        Test-PsdDocSchema $value $doc $schemaPath $schemaFrom $Ctx $Raw.IsPresent
     }
     if ($Ctx.Errors.Count -eq 0) { $result.Value = ConvertTo-PsdOutput $value }
     $result

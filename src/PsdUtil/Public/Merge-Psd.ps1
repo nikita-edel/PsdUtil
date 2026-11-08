@@ -9,10 +9,18 @@ function Merge-Psd {
     References are worked out against the merged result.
 
     .PARAMETER InputObject
-    Paths to files, or maps, in order.
+    Paths to files, or maps, in order. A generated class works too, if it was made from a map.
+    A map can have '!name' = 'team', to read it as !<team::Key> and to name it in errors.
 
     .PARAMETER Key
     Only these top-level keys are returned. Everything is still merged, so references work.
+
+    .PARAMETER Schema
+    Checks the merged result, with the same messages as Import-Psd.
+
+    .PARAMETER Include
+    Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
+    Their keys aren't in the result and the schema doesn't check them.
 
     .EXAMPLE
     Merge-Psd ./base.psd1, ./prod.psd1, @{ Tags = @('y') }
@@ -24,6 +32,10 @@ function Merge-Psd {
         [object[]] $InputObject,
 
         [string[]] $Key,
+
+        [string] $Schema,
+
+        [System.Collections.IDictionary] $Include,
 
         [ValidateSet('Error', 'Warn', 'Null', 'Keep')]
         [string] $UnresolvedReference = 'Error',
@@ -42,10 +54,11 @@ function Merge-Psd {
             foreach ($l in (Get-PsdLayers $f $ctx)) { $layers.Add($l) }
             $entry = $f
         }
-        elseif ($item -is [System.Collections.IDictionary] -or $item -is [System.Management.Automation.PSCustomObject]) {
+        elseif ($item -is [System.Collections.IDictionary] -or $item -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $item)) {
             $sf = New-PsdSyntheticFile "input $n" $null
-            $sf.Root = ConvertFrom-PsdObject $item $sf $ctx ''
+            $sf.Root = ConvertFrom-PsdObject $item $sf $ctx '' -AllowName
             $layers.Add(@{ File = $sf; Only = $null; Root = $null })
+            if ($sf.Named) { $entry = $sf }
         }
         else { Add-PsdError $ctx 'PSD206' "input $n is $(Get-PsdKindText $item). Merge-Psd takes paths and maps." }
     }
@@ -61,7 +74,7 @@ function Merge-Psd {
     if ($null -eq $entry) { $entry = New-PsdSyntheticFile 'merge' $null; $entry.Root = New-PsdMapNode $entry $null '' }
     $value = $null
     if ($layers.Count -gt 0 -and $ctx.Errors.Count -eq 0) {
-        $doc = New-PsdDoc $entry $layers $ctx
+        $doc = New-PsdDoc $entry $layers $ctx $false $Include
         if ($Key) {
             # Everything is merged, so references still work. Only these keys are returned.
             $value = [ordered]@{}
@@ -72,6 +85,10 @@ function Merge-Psd {
             }
         }
         else { $value = Resolve-PsdDoc $doc }
+        if ($Schema -and $ctx.Errors.Count -eq 0) {
+            $whole = Resolve-PsdDoc $doc
+            if ($ctx.Errors.Count -eq 0) { Test-PsdDocSchema $whole $doc (Resolve-PsdUserPath $Schema) $null $ctx }
+        }
     }
     Write-PsdResult $PSCmdlet $ctx 'the inputs'
     if ($ctx.Errors.Count -eq 0 -and $null -ne $value) { ConvertTo-PsdOutput $value }

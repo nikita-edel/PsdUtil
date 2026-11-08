@@ -18,7 +18,7 @@ function Test-Psd {
 
         [string] $Schema,
 
-        [System.Collections.IDictionary] $Override,
+        [object] $Override,
 
         [switch] $Raw,
 

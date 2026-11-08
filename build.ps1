@@ -59,7 +59,7 @@ foreach ($t in $Task) {
             if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
             New-Item -ItemType Directory -Path $stage | Out-Null
             Copy-Item -Recurse $module (Join-Path $stage 'PsdUtil')
-            Copy-Item (Join-Path $root 'install.ps1') $stage
+            Copy-Item (Join-Path $root 'tools/install.ps1') $stage
             $zip = Join-Path $dist "PsdUtil-$version.zip"
             if (Test-Path $zip) { Remove-Item -Force $zip }
             Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
