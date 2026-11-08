@@ -2,7 +2,7 @@ using namespace System.Management.Automation.Language
 
 # Schemas: .psd1 files loaded like any other file, then turned into rules.
 
-$script:PsdKeywords = @('Type', 'Required', 'Description', 'Default', 'Enum', 'Pattern', 'Min', 'Max', 'Properties', 'Items', 'AllowUnknown')
+$script:PsdKeywords = @('Type', 'Required', 'Description', 'Default', 'Enum', 'Pattern', 'Min', 'Max', 'Properties', 'Items', 'AllowUnknown', 'Merge')
 $script:PsdBaseTypes = @('string', 'int', 'double', 'bool', 'map', 'array', 'any', 'null')
 
 function Find-PsdTreeNode {
@@ -136,6 +136,7 @@ function New-PsdRule {
         Types = New-PsdList; Required = $false; Description = $null; Default = $null; HasDefault = $false
         Enum = $null; Pattern = $null; Regex = $null; Min = $null; Max = $null
         Properties = $null; Items = $null; AllowUnknown = $false; Name = (Get-PsdRuleName $Keys); SchemaFile = $null
+        Merge = $null
     }
     if ($Value -is [string]) { $Value = @{ Type = $Value } }
     if ($Value -isnot [System.Collections.IDictionary]) {
@@ -202,6 +203,19 @@ function New-PsdRule {
         }
     }
     if ($Value.Contains('Items')) { $rule.Items = New-PsdRule $Value['Items'] (& $sub 'Items') $S $false }
+    if ($Value.Contains('Merge')) {
+        # the default operator of the key, used when the data writes it without one
+        $x = $Value['Merge']
+        $listOk = $rule.Types.Count -eq 0
+        foreach ($spec in $rule.Types) { if ($spec.List -or $spec.Name -in 'array', 'any') { $listOk = $true } }
+        if ($x -notin $script:PsdDefaultOperators) {
+            Add-PsdSchemaError $S 'PSD500' "Merge in $($rule.Name) has to be one of $($script:PsdDefaultOperators -join ', '), but it's $(Format-PsdValueShort $x)." (& $sub 'Merge') @('+=, =+ and |= add to a list, := replaces a map instead of merging it.')
+        }
+        elseif ($x -ne ':=' -and -not $listOk) {
+            Add-PsdSchemaError $S 'PSD500' "Merge = '$x' in $($rule.Name) only works on lists, but its Type isn't one." (& $sub 'Merge') @("Give it a list type like 'string[]' or 'array'.")
+        }
+        else { $rule.Merge = [string]$x }
+    }
     if ($Value.Contains('Default')) {
         $rule.HasDefault = $true
         $rule.Default = $Value['Default']

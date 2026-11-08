@@ -24,6 +24,13 @@ function Import-Psd {
     Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
     Their keys aren't in the result and the schema doesn't check them.
 
+    .PARAMETER Merge
+    Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
+    adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
+    number of keys. Operators: +=, =+, |= for lists, := to replace a map instead of merging it. An
+    operator is used only where it fits the value; one written in the data wins. The first pattern that
+    matches wins, then Merge in the schema. Use [ordered]@{ } when the order matters.
+
     .PARAMETER UnresolvedReference
     What happens when a reference points to a key that doesn't exist.
     Error (default), Warn (a warning, the value becomes $null), Null (silently $null),
@@ -42,6 +49,9 @@ function Import-Psd {
     .EXAMPLE
     Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'prod' } }
 
+    .EXAMPLE
+    Import-Psd ./app.psd1 -Merge @{ '**' = '+=' }
+
     .OUTPUTS
     An ordered dictionary.
     #>
@@ -58,13 +68,15 @@ function Import-Psd {
 
         [System.Collections.IDictionary] $Include,
 
+        [System.Collections.IDictionary] $Merge,
+
         [ValidateSet('Error', 'Warn', 'Null', 'Keep')]
         [string] $UnresolvedReference = 'Error',
 
         [System.Collections.IDictionary] $Limits
     )
     process {
-        $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Include $Include -Unresolved $UnresolvedReference -Limits $Limits
+        $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Include $Include -Merge $Merge -Unresolved $UnresolvedReference -Limits $Limits
         Write-PsdResult $PSCmdlet $r.Ctx ([IO.Path]::GetFileName($Path))
         if ($r.Ctx.Errors.Count -eq 0) { $r.Value }
     }

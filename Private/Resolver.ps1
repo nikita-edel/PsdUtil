@@ -265,6 +265,12 @@ function Get-PsdPathValue {
     $file = $doc.Entry
     $tdoc = $doc
     $root = $null
+    # keys of the includes, for "did you mean" when a key without name:: is nowhere
+    $includeKeys = New-PsdList
+    # includes that have the first key too, when this file has it: they are named in a note or a hint
+    $alsoIn = New-PsdList
+    # the include a key without name:: was read from, because this file doesn't have it
+    $viaInclude = $null
     if ($Op.Ns) {
         # The namespace sits at the start of the operand, after an optional '?'.
         $nsStart = $Ref.Raw.IndexOf($Op.Ns, $rel)
@@ -276,7 +282,39 @@ function Get-PsdPathValue {
             if ($t.Own) { $root = Get-PsdOwnTree $tdoc $file } else { $root = $tdoc.Tree }
         }
     }
-    elseif (-not $Op.Builtin) { $root = $doc.Tree }
+    elseif (-not $Op.Builtin) {
+        $root = $doc.Tree
+        # A key that isn't in this document is read from the one include that has it, exactly as if name::
+        # were written. Several includes with it are an error, so nothing depends on their order.
+        $first = $Op.Segs[0]
+        $hits = New-PsdList
+        if (-not $first.IsIndex -and $root.K -eq 'M') {
+            foreach ($name in @($doc.Inc.PSBase.Keys | Sort-Object)) {
+                $t = $doc.Inc[$name].Tree
+                if ($null -ne $t -and $t.K -eq 'M') {
+                    foreach ($k in $t.V.PSBase.Keys) { $includeKeys.Add($k) }
+                    if ($t.V.Contains($first.Key)) { $hits.Add($name) }
+                }
+            }
+        }
+        if ($root.K -eq 'M' -and -not $first.IsIndex -and $root.V.Contains($first.Key)) {
+            foreach ($h in $hits) { $alsoIn.Add($h) }
+        }
+        elseif ($hits.Count -gt 0) {
+            if ($hits.Count -gt 1) {
+                $segRel = $first.Start - $Ref.Start
+                $choices = @($hits | ForEach-Object { "!<$($_)::$(Format-PsdSegs $Op.Segs $Op.Segs.Count)>" }) -join ' or '
+                Add-PsdNodeError $ctx 'PSD313' "'$($first.Key)' isn't in this file but in $($hits.Count) includes: $($hits -join ', '), so it's unclear which one is meant." $Ev.Node ($Ref.Start + $segRel) ($first.End - $first.Start) -Hint @("Write the one you mean: $choices.")
+                return $fail
+            }
+            if ($hits.Count -eq 1) {
+                $viaInclude = $hits[0]
+                $tdoc = $doc.Inc[$hits[0]]
+                $file = $tdoc.Entry
+                $root = $tdoc.Tree
+            }
+        }
+    }
 
     if ($Op.Builtin) {
         switch ($Op.Builtin.ToLowerInvariant()) {
@@ -336,8 +374,28 @@ function Get-PsdPathValue {
             if (-not $has) {
                 $in = ''
                 if ($Op.Ns) { $in = " in $($file.Name + $file.Ext)" }
+                elseif ($viaInclude) { $in = " in the include $viaInclude" }
                 if ($i -eq 0) { $msg = "'$($seg.Key)' doesn't exist$in." } else { $msg = "'$($seg.Key)' doesn't exist under $under$in." }
-                return (New-PsdMiss 'PSD301' $msg $segRel $segLen @((Get-PsdDidYouMean $seg.Key $keys)) $Op)
+                $candidates = @($keys)
+                if ($i -eq 0 -and -not $Op.Ns) {
+                    if ($includeKeys.Count -gt 0) { $msg = "'$($seg.Key)' doesn't exist in this file or its includes." }
+                    $candidates += @($includeKeys)
+                }
+                $hint = New-PsdList
+                $dym = Get-PsdDidYouMean $seg.Key $candidates
+                if ($dym) { $hint.Add($dym) }
+                if ($viaInclude) {
+                    $hint.Add("This file and its merge chain have no $($segs[0].Key), so it was read from the include $viaInclude, the only one that has it.")
+                }
+                if ($i -gt 0 -and $alsoIn.Count -gt 0) {
+                    $path = Format-PsdSegs $segs
+                    foreach ($name in $alsoIn) {
+                        if (Test-PsdTreePath $doc.Inc[$name].Tree $segs) { $hint.Add("The include $name has $($path): !<$($name)::$path> reads it.") }
+                        else { $hint.Add("The include $name has $($segs[0].Key) too, but not $path.") }
+                    }
+                    $hint.Add("Without name::, $($segs[0].Key) is read from this file and its merge chain because they have it, and the includes aren't looked at.")
+                }
+                return (New-PsdMiss 'PSD301' $msg $segRel $segLen $hint.ToArray() $Op)
             }
             if ($isNode) { $cur = $cur.V[$seg.Key] } else { $cur = $cur[$seg.Key] }
             continue
@@ -355,7 +413,49 @@ function Get-PsdPathValue {
         if ($isNode) { $cur = $cur.V[$idx] } else { $cur = $cur[$idx] }
     }
     if ($isNode) { $ok.Value = Get-PsdNodeValue $cur $tdoc } else { $ok.Value = $cur }
+    if ($alsoIn.Count -gt 0) { Add-PsdSourceNote $ctx $Ev $Op $alsoIn }
     $ok
+}
+
+# Returns $true when a path of a reference exists in a tree, without resolving anything.
+function Test-PsdTreePath {
+    param($Tree, $Segs)
+    $cur = $Tree
+    foreach ($seg in $Segs) {
+        if ($null -eq $cur) { return $false }
+        if ($seg.IsIndex) {
+            if ($cur.K -ne 'L') { return $false }
+            $i = $seg.Index
+            if ($i -lt 0) { $i += $cur.V.Count }
+            if ($i -lt 0 -or $i -ge $cur.V.Count) { return $false }
+            $cur = $cur.V[$i]
+            continue
+        }
+        if ($cur.K -ne 'M' -or -not $cur.V.Contains($seg.Key)) { return $false }
+        $cur = $cur.V[$seg.Key]
+    }
+    $true
+}
+
+# Notes, for -Verbose, that a reference without name:: read a key of this file that includes have too: where the
+# value came from and how to read the other ones. Once per place.
+function Add-PsdSourceNote {
+    param($Ctx, $Ev, $Op, $AlsoIn)
+    $first = $Op.Segs[0]
+    $loc = Get-PsdNodeLoc $Ev.Node $first.Start ($first.End - $first.Start)
+    $path = Format-PsdSegs $Op.Segs
+    $where = ''
+    if ($loc.File) {
+        $label = if ($loc.File.Synthetic) { $loc.File.Label } else { $loc.File.Name + $loc.File.Ext }
+        $where = if ($loc.Line -gt 0) { "$label, line $($loc.Line): " } else { "${label}: " }
+    }
+    $sig = "$where|$path"
+    if ($Ctx.NoteSeen.ContainsKey($sig)) { return }
+    $Ctx.NoteSeen[$sig] = $true
+    $names = @($AlsoIn)
+    $verb = if ($names.Count -gt 1) { "The includes $($names -join ', ') have" } else { "The include $($names[0]) has" }
+    $reads = @($names | ForEach-Object { "!<$($_)::$path>" }) -join ' or '
+    $Ctx.Notes.Add("$where!<$path> reads $($first.Key) from this file and its merge chain. $verb $($first.Key) too; $reads reads that one.")
 }
 
 function Resolve-PsdOp {

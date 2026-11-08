@@ -23,10 +23,10 @@ function Resolve-PsdDoc {
     , $v
 }
 
-# Checks a merged document against a schema file.
+# Checks a merged document against the rules of a schema.
 function Test-PsdDocSchema {
-    param($Value, $Doc, [string] $SchemaPath, $From, $Ctx, [bool] $Raw = $false)
-    $rules = Import-PsdSchemaRules $SchemaPath $Ctx $From
+    param($Value, $Doc, $Rules, $Ctx, [bool] $Raw = $false)
+    $rules = $Rules
     if ($null -eq $rules) { return }
     Test-PsdValueRule $Value $Doc.Tree $rules '' $Ctx $Doc
     if (-not $Raw) { return }
@@ -48,6 +48,7 @@ function Invoke-PsdLoad {
         [string] $Schema,
         $Override,
         [System.Collections.IDictionary] $Include,
+        [System.Collections.IDictionary] $Merge,
         [string] $Unresolved = 'Error',
         [System.Collections.IDictionary] $Limits,
         [switch] $Raw,
@@ -68,19 +69,29 @@ function Invoke-PsdLoad {
     }
     $result.Entry = $entry
     if ($null -eq $entry -or $null -eq $entry.Root) { return $result }
-    $doc = New-PsdFileDoc $entry $Ctx $Override -Prov:$Prov -Include $Include
+
+    # the schema is read before merging: Merge in it gives keys their default operator
+    $rules = $null
+    if (-not $SchemaMode) {
+        $schemaPath = $null
+        $schemaFrom = $null
+        if ($Schema) { $schemaPath = Resolve-PsdUserPath $Schema }
+        elseif ($entry.Schema) {
+            $schemaPath = [IO.Path]::GetFullPath([IO.Path]::Combine($entry.Dir, $entry.Schema.Path))
+            $schemaFrom = $entry.Schema.Node
+        }
+        if ($schemaPath) {
+            $rules = Import-PsdSchemaRules $schemaPath $Ctx $schemaFrom
+            if ($null -eq $rules) { return $result }
+        }
+    }
+    $defaults = ConvertFrom-PsdMergeOption $Merge $Ctx
+    if ($Ctx.Errors.Count -gt 0) { return $result }
+    $doc = New-PsdFileDoc $entry $Ctx $Override -Prov:$Prov -Include $Include -Rules $rules -Defaults $defaults
     $result.Doc = $doc
     $value = Resolve-PsdDoc $doc
-
-    $schemaPath = $null
-    $schemaFrom = $null
-    if ($Schema) { $schemaPath = Resolve-PsdUserPath $Schema }
-    elseif ($entry.Schema) {
-        $schemaPath = [IO.Path]::GetFullPath([IO.Path]::Combine($entry.Dir, $entry.Schema.Path))
-        $schemaFrom = $entry.Schema.Node
-    }
-    if ($schemaPath -and -not $SchemaMode -and $Ctx.Errors.Count -eq 0) {
-        Test-PsdDocSchema $value $doc $schemaPath $schemaFrom $Ctx $Raw.IsPresent
+    if ($null -ne $rules -and $Ctx.Errors.Count -eq 0) {
+        Test-PsdDocSchema $value $doc $rules $Ctx $Raw.IsPresent
     }
     if ($Ctx.Errors.Count -eq 0) { $result.Value = ConvertTo-PsdOutput $value }
     $result
