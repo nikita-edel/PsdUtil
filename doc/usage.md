@@ -198,6 +198,15 @@ A PSD301 says the same: for `!<Options.Tools>` it names the include that has `Op
 
 An included file is its own document, so `!<@name>` inside it is that file.
 
+### Scripts
+
+PsdUtil runs no code, so a `.ps1` is error PSD108. With `-Loader`, `Import-Psd`, `ConvertFrom-Psd` and `Merge-Psd` read files that aren't `.psd1` through a script block you give; it gets the full path and returns a map, or an object of a generated class made from one:
+
+```powershell
+Import-Psd ./app.psd1 -Loader { param($Path) & $Path }
+```
+
+What it returns is the file: `'!merge'`, `'!include'`, `'!name'` and `'!schema'` work in it, with paths relative to its folder, and `'!merge'` and `'!include'` in any file can reach it. Each script is read once per load. Its values have no line numbers, so errors name the file.
 ### Maps from the caller
 
 `-Include` passes values you only know at run time. It works on `Import-Psd`, `ConvertFrom-Psd`, `Merge-Psd`, `Test-Psd`, `Get-PsdError`, `Get-PsdProvenance` and `Resolve-PsdReference`.
@@ -393,7 +402,7 @@ last.psd1, line 13: 'Prot' doesn't exist under Server in base.psd1.
 
 | Codes | Area |
 |---|---|
-| PSD100–107 | reading a file |
+| PSD100–108 | reading a file |
 | PSD200–212 | merging, including, directives, operators |
 | PSD300–313 | references and filters |
 | PSD400–403 | conditions |

@@ -50,6 +50,7 @@ BeforeDiscovery {
         @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ A = 1; B = '!<!<A>>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD301'; Files = @{ 'main.psd1' = "@{ Port = 1; B = '!<Prot>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD301'; Files = @{ 'main.psd1' = "@{ S = `$null; B = '!<S.Port>' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD108'; Files = @{ 'main.psd1' = "@{ '!merge' = './s.ps1' }"; 's.ps1' = '@{ A = 1 }' }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD313'; Files = @{ 'main.psd1' = "@{ '!include' = './s.psd1'; B = '!<Db>' }"; 's.psd1' = "@{ Db = 1 }" }; Run = { Import-Psd ./main.psd1 -Include @{ run = @{ Db = 2 } } } }
         @{ Code = 'PSD302'; Files = @{ 'main.psd1' = "@{ B = '!<nope::A>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD303'; Files = @{ 'main.psd1' = "@{ A = '!<B>'; B = '!<A>' }" }; Run = { Import-Psd ./main.psd1 } }

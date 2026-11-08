@@ -17,6 +17,11 @@ function ConvertFrom-Psd {
     Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
     Their keys aren't in the result and the schema doesn't check them.
 
+    .PARAMETER Loader
+    Reads files that aren't .psd1, like .ps1 scripts that return a map or a generated class: a script
+    block that gets the full path and returns the map, for example { param($Path) & $Path }. PsdUtil
+    itself runs no code; without -Loader a .ps1 is error PSD108. What the loader returns is the file:
+    '!merge', '!include', '!name' and '!schema' work in it, with paths relative to its folder.
     .PARAMETER Merge
     Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
     adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
@@ -46,13 +51,15 @@ function ConvertFrom-Psd {
 
         [System.Collections.IDictionary] $Merge,
 
+        [scriptblock] $Loader,
+
         [ValidateSet('Error', 'Warn', 'Null', 'Keep')]
         [string] $UnresolvedReference = 'Error',
 
         [System.Collections.IDictionary] $Limits
     )
     process {
-        $r = Invoke-PsdLoad -Text $Text -BasePath $BasePath -Name $Name -Schema $Schema -Override $Override -Include $Include -Merge $Merge -Unresolved $UnresolvedReference -Limits $Limits
+        $r = Invoke-PsdLoad -Text $Text -BasePath $BasePath -Name $Name -Schema $Schema -Override $Override -Include $Include -Merge $Merge -Loader $Loader -Unresolved $UnresolvedReference -Limits $Limits
         Write-PsdResult $PSCmdlet $r.Ctx "$Name.psd1"
         if ($r.Ctx.Errors.Count -eq 0) { $r.Value }
     }

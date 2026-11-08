@@ -486,3 +486,58 @@ Describe 'References without a name read the includes' {
         $r.B | Should -BeNullOrEmpty
     }
 }
+
+Describe '-Loader reads scripts, and !merge and !include reach them' {
+    BeforeAll {
+        $script:run = { param($Path) & $Path }
+    }
+
+    It 'loads a .ps1 as the entry file' {
+        $dir = New-TestFiles @{ 'app.ps1' = "@{ A = 1; B = '!<A>' }" }
+        $r = Import-Psd (Join-Path $dir 'app.ps1') -Loader $run
+        $r.B | Should -Be 1
+    }
+
+    It '!merge reaches a .ps1, and a .ps1 can !merge, with paths relative to its folder' {
+        $dir = New-TestFiles @{
+            'base\base.ps1' = "@{ Tags = @('a'); Name = 'base' }"
+            'mid\mid.ps1'   = "@{ '!merge' = '../base/base.ps1'; 'Tags +=' = @('b') }"
+            'top.psd1'      = "@{ '!merge' = './mid/mid.ps1'; 'Tags +=' = @('c'); From = '!<base::Name>' }"
+        }
+        $r = Import-Psd (Join-Path $dir 'top.psd1') -Loader $run
+        $r.Tags -join ',' | Should -Be 'a,b,c'
+        $r.From | Should -Be 'base'
+    }
+
+    It '!include reaches a .ps1, and !name in it names it' {
+        $dir = New-TestFiles @{ 'shared.ps1' = "@{ '!name' = 'common'; Db = 'pg' }"; 'app.psd1' = "@{ '!include' = './shared.ps1'; A = '!<common::Db>' }" }
+        (Import-Psd (Join-Path $dir 'app.psd1') -Loader $run).A | Should -Be 'pg'
+    }
+
+    It 'Merge-Psd takes .ps1 paths' {
+        $dir = New-TestFiles @{ 'a.ps1' = "@{ A = 1 }"; 'b.ps1' = "@{ '!merge' = './a.ps1'; B = 2 }" }
+        $r = Merge-Psd (Join-Path $dir 'b.ps1') -Loader $run
+        $r.A | Should -Be 1
+        $r.B | Should -Be 2
+    }
+
+    It 'runs each script once, even when it is reached twice' {
+        $dir = New-TestFiles @{ 'base.ps1' = "@{ A = 1 }"; 'x.psd1' = "@{ '!merge' = './base.ps1' }"; 'top.psd1' = "@{ '!merge' = './base.ps1', './x.psd1' }" }
+        $script:calls = 0
+        $count = { param($Path) $script:calls++; & $Path }
+        $null = Import-Psd (Join-Path $dir 'top.psd1') -Loader $count
+        $script:calls | Should -Be 1
+    }
+
+    It 'is PSD108 for <Case>' -ForEach @(
+        @{ Case = 'a .ps1 without -Loader'; Body = "@{ A = 1 }"; Loader = $null }
+        @{ Case = 'a loader that gives two values'; Body = "@{ A = 1 }; @{ B = 2 }"; Loader = { param($Path) & $Path } }
+        @{ Case = 'a loader that gives no map'; Body = "'text'"; Loader = { param($Path) & $Path } }
+        @{ Case = 'a loader that throws'; Body = "throw 'broken'"; Loader = { param($Path) & $Path } }
+    ) {
+        $dir = New-TestFiles @{ 's.ps1' = $Body; 'app.psd1' = "@{ '!merge' = './s.ps1' }" }
+        $l = $Loader
+        if ($l) { Get-ErrorCode { Import-Psd ./app.psd1 -Loader $l } $dir | Should -Contain 'PSD108' }
+        else { Get-ErrorCode { Import-Psd ./app.psd1 } $dir | Should -Contain 'PSD108' }
+    }
+}

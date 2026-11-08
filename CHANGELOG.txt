@@ -9,3 +9,4 @@
 - Default operators for keys written without one: -Merge on Import-Psd, ConvertFrom-Psd and Merge-Psd (key paths with * and **), Merge in the schema
 - A reference without name:: reads a key the file doesn't have from the one include that has it ('!include' or -Include); several is PSD313
 - -Verbose tells where a value without name:: came from when an include has the key too; PSD301 names the include that has a missing path
+- -Loader on Import-Psd, ConvertFrom-Psd and Merge-Psd: reads .ps1 and other files through a script block, so !merge and !include reach them and work in them; without it a .ps1 is PSD108
