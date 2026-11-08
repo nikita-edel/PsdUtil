@@ -1,8 +1,12 @@
 # Applies layers on top of each other. Maps deep merge, everything else is replaced.
 # List operators are recorded as 'O' nodes and run when the key is resolved.
+# A key without an operator can get a default one from -Merge or Merge in the schema.
 
+$script:PsdDefaultOperators = @('+=', '=+', '|=', ':=')
+
+# Rule: the schema rule of the map, for Merge of its keys. Keys: the key path of the map, for -Merge patterns.
 function Merge-PsdMap {
-    param($Base, $Layer, $M, [string] $Path)
+    param($Base, $Layer, $M, [string] $Path, $Rule = $null, $Keys = $null)
     $out = New-PsdMapNode $Layer.File $null $Path
     Copy-PsdLocation $Layer $out
     if ($null -ne $Base) { foreach ($k in @($Base.V.PSBase.Keys)) { $out.V[$k] = $Base.V[$k] } }
@@ -12,10 +16,24 @@ function Merge-PsdMap {
         $cp = Join-PsdPath $Path $k
         $prev = $null
         if ($out.V.Contains($k)) { $prev = $out.V[$k] }
+        $childRule = Get-PsdChildRule $Rule $k
+        $childKeys = New-PsdList
+        foreach ($x in $Keys) { $childKeys.Add($x) }
+        $childKeys.Add([string]$k)
+        # a key without an operator gets the default one of -Merge or the schema, if it fits the value
+        if ($null -ne $prev) {
+            $op = Get-PsdDefaultOp $M $childKeys $childRule
+            $emptyPrev = $prev.K -eq 'S' -and $null -eq $prev.V
+            $fits = ($op -eq ':=' -and $v.K -eq 'M') -or ($op -in '+=', '=+', '|=' -and $v.K -eq 'L' -and ($prev.K -in 'L', 'O' -or $emptyPrev))
+            if ($fits) {
+                Invoke-PsdMergeOp $out @{ Key = $k; Op = $op; Arg = $v; File = $v.File; Line = $v.KeyLine; Col = $v.KeyCol; Len = $v.KeyLen; Text = [string]$k; Path = $cp } $M
+                continue
+            }
+        }
         if ($v.K -eq 'M') {
             $nb = $null
             if ($null -ne $prev -and $prev.K -eq 'M') { $nb = $prev }
-            $nv = Merge-PsdMap $nb $v $M $cp
+            $nv = Merge-PsdMap $nb $v $M $cp $childRule $childKeys
         }
         else { $nv = ConvertTo-PsdNormal $v $M $cp }
         Set-PsdProv $M $cp $nv $prev
@@ -23,9 +41,67 @@ function Merge-PsdMap {
     }
     foreach ($op in $Layer.Ops) { Invoke-PsdMergeOp $out $op $M }
     foreach ($if in $Layer.Ifs) {
-        if (Test-PsdIfTrue $if $M) { $out = Merge-PsdMap $out $if.Body $M $Path }
+        if (Test-PsdIfTrue $if $M) { $out = Merge-PsdMap $out $if.Body $M $Path $Rule $Keys }
     }
     $out
+}
+
+# The rule of a key in the rule of its map: its entry in Properties, else Items. $null without a rule.
+function Get-PsdChildRule {
+    param($Rule, [string] $Key)
+    if ($null -eq $Rule) { return $null }
+    if ($Rule.Properties) {
+        foreach ($k in $Rule.Properties.PSBase.Keys) { if ($k -ieq $Key) { return $Rule.Properties[$k] } }
+    }
+    $Rule.Items
+}
+
+# Returns $true when a key path matches a -Merge pattern: * is one key, ** any number of keys, other parts are
+# wildcards on one key, ignoring case.
+function Test-PsdMergePattern {
+    param($Pattern, [int] $Pi, $Keys, [int] $Ki)
+    if ($Pi -ge $Pattern.Count) { return ($Ki -ge $Keys.Count) }
+    $p = $Pattern[$Pi]
+    if ($p -eq '**') {
+        for ($i = $Ki; $i -le $Keys.Count; $i++) { if (Test-PsdMergePattern $Pattern ($Pi + 1) $Keys $i) { return $true } }
+        return $false
+    }
+    if ($Ki -ge $Keys.Count) { return $false }
+    if (-not ([System.Management.Automation.WildcardPattern]::new($p, 'IgnoreCase').IsMatch($Keys[$Ki]))) { return $false }
+    Test-PsdMergePattern $Pattern ($Pi + 1) $Keys ($Ki + 1)
+}
+
+# The operator a key written without one gets: the first -Merge pattern that matches its path, else Merge of its
+# schema rule, else $null.
+function Get-PsdDefaultOp {
+    param($M, $Keys, $Rule)
+    foreach ($d in @($M['Defaults'])) {
+        if ($null -ne $d -and (Test-PsdMergePattern $d.Pattern 0 $Keys 0)) { return $d.Op }
+    }
+    if ($null -ne $Rule -and $Rule['Merge']) { return $Rule['Merge'] }
+    $null
+}
+
+# Turns the -Merge map (key path pattern -> operator) into a list of @{ Pattern = keys; Op }, in the given order.
+function ConvertFrom-PsdMergeOption {
+    param($Merge, $Ctx)
+    $out = New-PsdList
+    if ($null -eq $Merge) { return , $out }
+    foreach ($k in @($Merge.PSBase.Keys)) {
+        $pattern = [string]$k
+        $op = $Merge[$k]
+        if ($op -notin $script:PsdDefaultOperators) {
+            Add-PsdError $Ctx 'PSD206' "-Merge: '$op' for '$pattern' isn't a default operator." -Hint @("Use $($script:PsdDefaultOperators -join ', '). Removing (-=) can only be written in the data.")
+            continue
+        }
+        $parts = @($pattern.Split('.'))
+        if ($pattern -eq '' -or @($parts | Where-Object { $_ -eq '' }).Count) {
+            Add-PsdError $Ctx 'PSD206' "-Merge: '$pattern' isn't a key path." -Hint @("Write keys with dots, * for one key and ** for any number: 'Server.Tags', '*.Tags', '**'.")
+            continue
+        }
+        $out.Add(@{ Pattern = $parts; Op = [string]$op })
+    }
+    , $out
 }
 
 # Applies the operators and conditions inside a value that isn't merged onto anything.

@@ -138,6 +138,9 @@ function New-PsdDocObject {
         Prelim    = $null
         Final     = $null
         AllTree   = $null
+        # schema rule of the top map, for Merge; -Merge as @{ Pattern; Op }
+        Rules     = $null
+        Defaults  = $null
     }
 }
 
@@ -208,10 +211,13 @@ function Add-PsdMapIncludes {
     }
 }
 
+# Rules and Defaults give keys without an operator a default one, see Get-PsdDefaultOp. Included files get none.
 function New-PsdDoc {
-    param($Entry, $Layers, $Ctx, [bool] $Prov = $false, $Include = $null)
+    param($Entry, $Layers, $Ctx, [bool] $Prov = $false, $Include = $null, $Rules = $null, $Defaults = $null)
     $Ctx.DocStack.Add($Entry)
     $doc = New-PsdDocObject $Entry $Layers $Ctx
+    $doc.Rules = $Rules
+    $doc.Defaults = $Defaults
     if ($Prov) { $doc.Prov = @{} }
     foreach ($l in $Layers) {
         $f = $l.File
@@ -239,6 +245,8 @@ function New-PsdDoc {
     $pre.Ns = $doc.Ns
     $pre.Inc = $doc.Inc
     $pre.Mode = 'None'
+    $pre.Rules = $Rules
+    $pre.Defaults = $Defaults
     $pre.Final = $doc
     $pre.Tree = Merge-PsdLayers $pre $true
     $doc.Prelim = $pre
@@ -275,13 +283,13 @@ function Select-PsdKeys {
 function Merge-PsdLayers {
     param($Doc, [bool] $Quiet, [string] $Mode = $null)
     if (-not $Mode) { $Mode = $Doc.Mode }
-    $m = @{ Doc = $Doc; Quiet = $Quiet; Mode = $Mode; Prov = $null; Ctx = $Doc.Ctx }
+    $m = @{ Doc = $Doc; Quiet = $Quiet; Mode = $Mode; Prov = $null; Ctx = $Doc.Ctx; Defaults = $Doc.Defaults }
     if (-not $Quiet) { $m.Prov = $Doc.Prov }
     $acc = $null
     foreach ($l in $Doc.Layers) {
         $root = Get-PsdLayerRoot $l
         if ($null -eq $root) { continue }
-        $acc = Merge-PsdMap $acc $root $m ''
+        $acc = Merge-PsdMap $acc $root $m '' $Doc.Rules
     }
     if ($null -eq $acc) { $acc = New-PsdMapNode $Doc.Entry $null '' }
     $acc
@@ -294,7 +302,7 @@ function Get-PsdOwnTree {
     $tree = New-PsdMapNode $File $null ''
     foreach ($l in $Doc.Layers) {
         if ($l.File.Key -eq $File.Key) {
-            $m = @{ Doc = $Doc; Quiet = $true; Mode = $Doc.Mode; Prov = $null; Ctx = $Doc.Ctx }
+            $m = @{ Doc = $Doc; Quiet = $true; Mode = $Doc.Mode; Prov = $null; Ctx = $Doc.Ctx; Defaults = $null }
             $tree = Merge-PsdMap $null $l.File.Root $m ''
             break
         }
@@ -311,7 +319,7 @@ function Get-PsdAllTree {
 
 # Builds the document for a file, with an optional extra layer on top.
 function New-PsdFileDoc {
-    param($Entry, $Ctx, $Override = $null, [switch] $Prov, $Include = $null)
+    param($Entry, $Ctx, $Override = $null, [switch] $Prov, $Include = $null, $Rules = $null, $Defaults = $null)
     $layers = Get-PsdLayers $Entry $Ctx
     if ($null -ne $Override) {
         if (-not ($Override -is [System.Collections.IDictionary] -or $null -ne (Get-PsdKeptMap $Override))) {
@@ -322,5 +330,5 @@ function New-PsdFileDoc {
         $of.Root = ConvertFrom-PsdObject $Override $of $Ctx ''
         $layers.Add(@{ File = $of; Only = $null; Root = $null })
     }
-    New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent $Include
+    New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent $Include $Rules $Defaults
 }

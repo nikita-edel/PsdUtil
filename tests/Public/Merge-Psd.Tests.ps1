@@ -128,3 +128,76 @@ Describe 'Merge-Psd -Schema' {
         Get-ErrorCode { Merge-Psd @{ A = 1 } -Schema ./nope.psd1 } $dir | Should -Contain 'PSD511'
     }
 }
+
+Describe 'Default operators: -Merge and Merge in the schema' {
+    BeforeAll {
+        $script:base = @{ Tags = @('a'); Server = @{ Ports = @(80); Host = 'h' }; Name = 'x'; Opts = @{ A = 1; B = 2 } }
+    }
+
+    It '-Merge ** makes every list add, at any depth' {
+        $m = Merge-Psd $base, @{ Tags = @('b'); Server = @{ Ports = @(443) } } -Merge @{ '**' = '+=' }
+        $m.Tags -join ',' | Should -Be 'a,b'
+        $m.Server.Ports -join ',' | Should -Be '80,443'
+        $m.Server.Host | Should -Be 'h'
+    }
+
+    It '-Merge takes key paths, * is one key, and other operators' {
+        $m = Merge-Psd $base, @{ Tags = @('b', 'a'); Server = @{ Ports = @(443) } } -Merge ([ordered]@{ Tags = '|='; '*.Ports' = '=+' })
+        $m.Tags -join ',' | Should -Be 'a,b'
+        $m.Server.Ports -join ',' | Should -Be '443,80'
+    }
+
+    It ':= replaces a map instead of merging it' {
+        $m = Merge-Psd $base, @{ Opts = @{ C = 3 } } -Merge @{ Opts = ':=' }
+        @($m.Opts.Keys) -join ',' | Should -Be 'C'
+    }
+
+    It 'a key it does not match, or a value it does not fit, merges as before' {
+        $m = Merge-Psd $base, @{ Tags = @('b'); Name = 'y' } -Merge @{ Server = '+=' }
+        $m.Tags -join ',' | Should -Be 'b'
+        (Merge-Psd $base, @{ Name = 'y' } -Merge @{ '**' = '+=' }).Name | Should -Be 'y'
+    }
+
+    It 'an operator written in the data wins' {
+        $m = Merge-Psd $base, @{ 'Tags :=' = @('b') } -Merge @{ '**' = '+=' }
+        $m.Tags -join ',' | Should -Be 'b'
+        (Merge-Psd $base, @{ 'Tags -=' = @('a') } -Merge @{ '**' = '+=' }).Tags.Count | Should -Be 0
+    }
+
+    It 'works in an !if and in files with !merge' {
+        $dir = New-TestFiles @{ 'base.psd1' = "@{ Tags = @('a') }"; 'top.psd1' = "@{ '!merge' = './base.psd1'; Tags = @('b'); '!if 1 -eq 1' = @{ Tags = @('c') } }" }
+        (Import-Psd (Join-Path $dir 'top.psd1') -Merge @{ Tags = '+=' }).Tags -join ',' | Should -Be 'a,b,c'
+    }
+
+    It 'without -Merge or a schema nothing changes' {
+        (Merge-Psd $base, @{ Tags = @('b') }).Tags -join ',' | Should -Be 'b'
+    }
+
+    It 'Merge in the schema, for Import-Psd, Merge-Psd and -Override' {
+        $dir = New-TestFiles @{
+            's.psd1'    = "@{ Properties = @{ Tags = @{ Type = 'string[]'; Merge = '+=' }; Opts = @{ Type = 'map'; Items = @{ Type = 'any'; Merge = '+=' } } } }"
+            'base.psd1' = "@{ Tags = @('a'); Opts = @{ L = @(1) } }"
+            'top.psd1'  = "@{ '!merge' = './base.psd1'; Tags = @('b'); Opts = @{ L = @(2) } }"
+        }
+        $r = Import-Psd (Join-Path $dir 'top.psd1') -Schema (Join-Path $dir 's.psd1')
+        $r.Tags -join ',' | Should -Be 'a,b'
+        $r.Opts.L -join ',' | Should -Be '1,2'
+        (Merge-Psd (Join-Path $dir 'base.psd1'), @{ Tags = @('c') } -Schema (Join-Path $dir 's.psd1')).Tags -join ',' | Should -Be 'a,c'
+        (Import-Psd (Join-Path $dir 'base.psd1') -Schema (Join-Path $dir 's.psd1') -Override @{ Tags = @('d') }).Tags -join ',' | Should -Be 'a,d'
+    }
+
+    It '-Merge wins over Merge in the schema' {
+        $dir = New-TestFiles @{ 's.psd1' = "@{ Properties = @{ Tags = @{ Type = 'string[]'; Merge = '+=' } } }" }
+        (Merge-Psd @{ Tags = @('a') }, @{ Tags = @('b') } -Schema (Join-Path $dir 's.psd1') -Merge @{ Tags = '=+' }).Tags -join ',' | Should -Be 'b,a'
+    }
+
+    It 'is an error for <Case>' -ForEach @(
+        @{ Case = '-= in -Merge'; Code = 'PSD206'; Run = { Merge-Psd @{ A = 1 } -Merge @{ A = '-=' } } }
+        @{ Case = 'an empty key path in -Merge'; Code = 'PSD206'; Run = { Merge-Psd @{ A = 1 } -Merge @{ 'A..B' = '+=' } } }
+        @{ Case = 'an unknown operator in the schema'; Code = 'PSD500'; Run = { Import-Psd ./a.psd1 -Schema ./bad.psd1 } }
+        @{ Case = 'a list operator on a key that is no list'; Code = 'PSD500'; Run = { Import-Psd ./a.psd1 -Schema ./notlist.psd1 } }
+    ) {
+        $dir = New-TestFiles @{ 'a.psd1' = '@{ A = 1 }'; 'bad.psd1' = "@{ Properties = @{ A = @{ Type = 'int'; Merge = 'x' } } }"; 'notlist.psd1' = "@{ Properties = @{ A = @{ Type = 'int'; Merge = '+=' } } }" }
+        Get-ErrorCode $Run $dir | Should -Contain $Code
+    }
+}

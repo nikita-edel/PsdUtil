@@ -36,6 +36,9 @@ function New-PsdContext {
     @{
         Errors     = New-Object 'System.Collections.Generic.List[object]'
         Warnings   = New-Object 'System.Collections.Generic.List[string]'
+        # where a value came from when it could have come from more than one place; written with -Verbose
+        Notes      = New-Object 'System.Collections.Generic.List[string]'
+        NoteSeen   = @{}
         Limits     = $l
         Files      = @{}
         Docs       = @{}
@@ -161,6 +164,7 @@ function New-PsdErrorRecord {
 # Writes every collected error and warning through the calling command.
 function Write-PsdResult {
     param($Cmdlet, $Ctx, [string] $What)
+    foreach ($n in $Ctx.Notes) { $Cmdlet.WriteVerbose($n) }
     foreach ($w in $Ctx.Warnings) { $Cmdlet.WriteWarning($w) }
     foreach ($e in $Ctx.Errors) { $Cmdlet.WriteError((New-PsdErrorRecord $e)) }
     if ($Ctx.Errors.Count -gt 1 -and $What) {

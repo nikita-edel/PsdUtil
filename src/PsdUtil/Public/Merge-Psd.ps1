@@ -5,7 +5,7 @@ function Merge-Psd {
 
     .DESCRIPTION
     Uses the same rules as '!merge': maps deep merge, everything else is replaced, and the merge
-    operators (+=, =+, |=, -=, :=) work. A file brings its own chain and includes with it.
+    operators (+=, =+, |=, -=, :=) work. -Merge and Merge in the schema give keys a default operator. A file brings its own chain and includes with it.
     References are worked out against the merged result.
 
     .PARAMETER InputObject
@@ -16,14 +16,24 @@ function Merge-Psd {
     Only these top-level keys are returned. Everything is still merged, so references work.
 
     .PARAMETER Schema
-    Checks the merged result, with the same messages as Import-Psd.
+    Checks the merged result, with the same messages as Import-Psd. Merge in it gives keys their default operator.
 
     .PARAMETER Include
     Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
     Their keys aren't in the result and the schema doesn't check them.
 
+    .PARAMETER Merge
+    Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
+    adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
+    number of keys. Operators: +=, =+, |= for lists, := to replace a map instead of merging it. An
+    operator is used only where it fits the value; one written in the data wins. The first pattern that
+    matches wins, then Merge in the schema. Use [ordered]@{ } when the order matters.
+
     .EXAMPLE
     Merge-Psd ./base.psd1, ./prod.psd1, @{ Tags = @('y') }
+
+    .EXAMPLE
+    Merge-Psd ./base.psd1, ./prod.psd1 -Merge @{ '**' = '+=' }
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
@@ -36,6 +46,8 @@ function Merge-Psd {
         [string] $Schema,
 
         [System.Collections.IDictionary] $Include,
+
+        [System.Collections.IDictionary] $Merge,
 
         [ValidateSet('Error', 'Warn', 'Null', 'Keep')]
         [string] $UnresolvedReference = 'Error',
@@ -72,9 +84,13 @@ function Merge-Psd {
         }
     }
     if ($null -eq $entry) { $entry = New-PsdSyntheticFile 'merge' $null; $entry.Root = New-PsdMapNode $entry $null '' }
+    # the schema is read before merging: Merge in it gives keys their default operator
+    $rules = $null
+    if ($Schema -and $ctx.Errors.Count -eq 0) { $rules = Import-PsdSchemaRules (Resolve-PsdUserPath $Schema) $ctx $null }
+    $defaults = ConvertFrom-PsdMergeOption $Merge $ctx
     $value = $null
     if ($layers.Count -gt 0 -and $ctx.Errors.Count -eq 0) {
-        $doc = New-PsdDoc $entry $layers $ctx $false $Include
+        $doc = New-PsdDoc $entry $layers $ctx $false $Include $rules $defaults
         if ($Key) {
             # Everything is merged, so references still work. Only these keys are returned.
             $value = [ordered]@{}
@@ -85,9 +101,9 @@ function Merge-Psd {
             }
         }
         else { $value = Resolve-PsdDoc $doc }
-        if ($Schema -and $ctx.Errors.Count -eq 0) {
+        if ($null -ne $rules -and $ctx.Errors.Count -eq 0) {
             $whole = Resolve-PsdDoc $doc
-            if ($ctx.Errors.Count -eq 0) { Test-PsdDocSchema $whole $doc (Resolve-PsdUserPath $Schema) $null $ctx }
+            if ($ctx.Errors.Count -eq 0) { Test-PsdDocSchema $whole $doc $rules $ctx }
         }
     }
     Write-PsdResult $PSCmdlet $ctx 'the inputs'

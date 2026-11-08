@@ -406,3 +406,83 @@ Describe '-Include' {
         Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'x' } } } $dir | Should -Contain 'PSD302'
     }
 }
+
+Describe 'References without a name read the includes' {
+    It 'reads a key only an include has, as if the name were written: <Case>' -ForEach @(
+        @{ Case = '!include'; Files = @{ 'app.psd1' = "@{ '!include' = './shared.psd1'; A = '!<Db>' }"; 'shared.psd1' = "@{ Db = 'pg' }" }; Include = $null }
+        @{ Case = '-Include'; Files = @{ 'app.psd1' = "@{ A = '!<Db>' }" }; Include = @{ run = @{ Db = 'pg' } } }
+    ) {
+        $dir = New-TestFiles $Files
+        $r = if ($Include) { Import-Psd (Join-Path $dir 'app.psd1') -Include $Include } else { Import-Psd (Join-Path $dir 'app.psd1') }
+        $r.A | Should -Be 'pg'
+        $r.Contains('Db') | Should -BeFalse
+    }
+
+    It 'reads deeper paths and keeps the type' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ A = '!<Server.Port>'; B = 'p=!<Server.Port>' }" }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include @{ run = @{ Server = @{ Port = 80 } } }
+        $r.A | Should -BeOfType [int]
+        $r.B | Should -Be 'p=80'
+    }
+
+    It 'the file and its merge chain come first' {
+        $dir = New-TestFiles @{ 'base.psd1' = "@{ Db = 'base' }"; 'app.psd1' = "@{ '!merge' = './base.psd1'; A = '!<Db>' }" }
+        (Import-Psd (Join-Path $dir 'app.psd1') -Include @{ run = @{ Db = 'run' } }).A | Should -Be 'base'
+    }
+
+    It 'works in conditions' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ '!if !<Stage> -eq `"prod`"' = @{ R = 3 } }" }
+        (Import-Psd (Join-Path $dir 'app.psd1') -Include @{ run = @{ Stage = 'prod' } }).R | Should -Be 3
+    }
+
+    It 'is PSD313 when several includes have the key and the file does not' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ '!include' = './shared.psd1'; A = '!<Db>' }"; 'shared.psd1' = "@{ Db = 'pg' }" }
+        $t = Get-ErrorText { Import-Psd ./app.psd1 -Include @{ run = @{ Db = 'x' } } } $dir
+        "$t" | Should -Match 'PSD313'
+        "$t" | Should -Match '!<run::Db>'
+        "$t" | Should -Match '!<shared::Db>'
+    }
+
+    It 'is PSD301 with a suggestion from the includes when nothing has it' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ Name = 'x'; A = '!<Stgae>' }" }
+        $t = Get-ErrorText { Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'x' } } } $dir
+        "$t" | Should -Match 'PSD301'
+        "$t" | Should -Match "Did you mean 'Stage'"
+    }
+
+    It 'tells with -Verbose where a value came from when an include has the key too' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{`n    Inst = 'mine'`n    A = '!<Inst>\x'`n}" }
+        $out = @(Import-Psd (Join-Path $dir 'app.psd1') -Include @{ config = @{ Inst = 'cfg' } } -Verbose 4>&1)
+        $notes = @($out | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object Message)
+        $notes.Count | Should -Be 1
+        $notes[0] | Should -Match 'app\.psd1, line 3: !<Inst> reads Inst from this file and its merge chain\. The include config has Inst too; !<config::Inst> reads that one\.'
+        ($out | Where-Object { $_ -is [System.Collections.IDictionary] }).A | Should -Be 'mine\x'
+    }
+
+    It 'is quiet without -Verbose' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ Inst = 'mine'; A = '!<Inst>' }" }
+        @(Import-Psd (Join-Path $dir 'app.psd1') -Include @{ config = @{ Inst = 'cfg' } } 4>&1 | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Count | Should -Be 0
+    }
+
+    It 'PSD301 for a deeper key names the include that has it and why it was not read' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ Options = @{ A = 1 }; X = '!<Options.Tools>' }" }
+        $t = Get-ErrorText { Import-Psd ./app.psd1 -Include @{ config = @{ Options = @{ Tools = 't' } } } } $dir
+        "$t" | Should -Match 'PSD301'
+        "$t" | Should -Match 'The include config has Options\.Tools: !<config::Options\.Tools> reads it\.'
+        "$t" | Should -Match 'Without name::, Options is read from this file and its merge chain'
+    }
+
+    It 'PSD301 for a deeper key read from an include says so' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ X = '!<Server.Prot>' }" }
+        $t = Get-ErrorText { Import-Psd ./app.psd1 -Include @{ config = @{ Server = @{ Port = 1 } } } } $dir
+        "$t" | Should -Match "doesn't exist under Server in the include config"
+        "$t" | Should -Match "Did you mean 'Port'"
+        "$t" | Should -Match 'so it was read from the include config'
+    }
+    It 'a fallback ?? and an optional ? still work when nothing has it' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ A = '!<Nope ?? 1>'; B = '!<?Nope>' }" }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include @{ run = @{ X = 1 } }
+        $r.A | Should -Be 1
+        $r.B | Should -BeNullOrEmpty
+    }
+}

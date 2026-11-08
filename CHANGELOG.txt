@@ -6,3 +6,6 @@
 - -Schema on Merge-Psd
 - Generated classes made from a map keep it, so typed configs can use references, merge operators and !if
 - -Constant on New-PsdType: classes of named values, like [Region]::eu_west or [Port]::Http, for values known only when the types are written
+- Default operators for keys written without one: -Merge on Import-Psd, ConvertFrom-Psd and Merge-Psd (key paths with * and **), Merge in the schema
+- A reference without name:: reads a key the file doesn't have from the one include that has it ('!include' or -Include); several is PSD313
+- -Verbose tells where a value without name:: came from when an include has the key too; PSD301 names the include that has a missing path

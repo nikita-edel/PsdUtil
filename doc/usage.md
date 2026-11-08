@@ -141,9 +141,25 @@ They go after the key, with a space before them.
 
 They also work within one file: plain keys go first, then operators from top to bottom. For a nested key, nest the map: `Server = @{ 'Ports +=' = @(443) }`.
 
+### Default operators
+
+A key written without an operator can get one by default, from `-Merge` or from `Merge` in the schema:
+
+```powershell
+Import-Psd ./app.psd1 -Merge @{ '**' = '+=' }               # every list adds to the one below, at any depth
+Merge-Psd ./base.psd1, ./app.psd1 -Merge ([ordered]@{ Plugins = '|='; 'Server.*' = '+=' })
+```
+
+```powershell
+# app.schema.psd1
+Plugins = @{ Type = 'string[]'; Merge = '+=' }              # Plugins = @('cache') then adds
+```
+
+Key paths use dots, `*` for one key and `**` for any number of keys. Operators: `+=`, `=+` and `|=` for lists, `:=` to replace a map instead of merging it. A default is used only where it fits: a list operator only on a list, `:=` only on a map. An operator written in the data always wins, so `'Plugins :='` still replaces and `'Plugins -='` still removes. The first `-Merge` pattern that matches wins, then the schema. `-Merge` works on `Import-Psd`, `ConvertFrom-Psd` and `Merge-Psd`.
+
 ## Including files and namespaces
 
-`'!include'` makes another file readable without merging it. Its keys are only reachable through its name.
+`'!include'` makes another file readable without merging it. Its keys aren't in the result.
 
 ```powershell
 @{
@@ -163,6 +179,22 @@ References resolve after merging. In a chain `base`, `next`, `last`:
 '!<this::Key>'      # Key in the file where this is written, before merging
 '!<this::@name>'    # the file where this is written
 ```
+
+A reference without `name::` reads the merged result. A key that isn't there is read from the one include that has it, `'!include'` or `-Include`, exactly as if its name were written:
+
+```powershell
+'!<Database>'       # Database of this file and its chain, else of the one include that has it
+```
+
+If several includes have the key and this file doesn't, it's error PSD313: write the name, like `!<shared::Database>`. If nothing has it, it's PSD301, with a suggestion from every include. The same holds in conditions.
+
+When this file has the key, its value is used even if an include has the key too, and only the first key of the path decides: `!<Options.Tools>` reads `Options` of this file, never of an include. Nothing is wrong then, so it's no warning, but `-Verbose` says where each such value came from:
+
+```
+VERBOSE: app.psd1, line 3: !<Inst> reads Inst from this file and its merge chain. The include config has Inst too; !<config::Inst> reads that one.
+```
+
+A PSD301 says the same: for `!<Options.Tools>` it names the include that has `Options.Tools` and how to read it, and for a key read from an include it says which one.
 
 An included file is its own document, so `!<@name>` inside it is that file.
 
@@ -238,6 +270,7 @@ A schema is a `.psd1` file. Pass it with `-Schema`, or put `'!schema' = './app.s
 | `Properties` | the known keys of a map |
 | `Items` | a rule for every list item, or every value of a free-form map |
 | `AllowUnknown` | other keys are allowed too |
+| `Merge` | the operator a key gets when the data writes it without one: `+=`, `=+`, `|=`, `:=` |
 
 Types: `string`, `int`, `double`, `bool`, `map`, `array`, `any`, `null`, plus `[]` for a list, like `string[]`. Also `[version]`, `[guid]`, `[datetime]`, .NET enums like `[System.DayOfWeek]`, and your own enums through `'!types'`.
 
@@ -362,7 +395,7 @@ last.psd1, line 13: 'Prot' doesn't exist under Server in base.psd1.
 |---|---|
 | PSD100–107 | reading a file |
 | PSD200–212 | merging, including, directives, operators |
-| PSD300–312 | references and filters |
+| PSD300–313 | references and filters |
 | PSD400–403 | conditions |
 | PSD500–515 | schemas |
 | PSD600–607 | writing and editing |
