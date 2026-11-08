@@ -1,7 +1,7 @@
 0.1.0
 
 - initial release
-- -Include on Import-Psd, ConvertFrom-Psd and Merge-Psd: maps from the caller, read as !<name::Key>
+- -Include on the commands that load or check a file: maps from the caller, read as !<name::Key>
 - '!name' in maps given to Merge-Psd
 - -Schema on Merge-Psd
 - Generated classes made from a map keep it, so typed configs can use references, merge operators and !if

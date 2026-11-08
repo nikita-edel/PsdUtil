@@ -15,8 +15,8 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $source = Join-Path $PSScriptRoot 'PsdUtil'
-if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { $source = Join-Path $PSScriptRoot 'src/PsdUtil' }
-if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { throw "Can't find PsdUtil.psd1 next to this script or in src/PsdUtil." }
+if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { $source = Join-Path $PSScriptRoot '../src/PsdUtil' }
+if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { throw "Can't find PsdUtil.psd1 next to this script or in ../src/PsdUtil." }
 $version = (Import-PowerShellDataFile (Join-Path $source 'PsdUtil.psd1')).ModuleVersion
 
 $onWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT

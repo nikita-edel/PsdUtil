@@ -7,6 +7,9 @@ function Get-PsdError {
     Each object has Code, File, Line, Column, Key and Message.
     With -InputObject, checks an object already in memory against -Schema.
 
+    .PARAMETER Include
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
+
     .EXAMPLE
     Get-PsdError ./app.psd1 -Schema ./app.schema.psd1
 
@@ -30,6 +33,9 @@ function Get-PsdError {
         [object] $Override,
 
         [Parameter(ParameterSetName = 'File')]
+        [System.Collections.IDictionary] $Include,
+
+        [Parameter(ParameterSetName = 'File')]
         [switch] $Raw,
 
         [System.Collections.IDictionary] $Limits
@@ -41,7 +47,7 @@ function Get-PsdError {
             if ($rules) { Test-PsdValueRule (Copy-PsdPlain $InputObject) $null $rules '' $ctx $null }
         }
         else {
-            $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Raw:$Raw -Limits $Limits
+            $r = Invoke-PsdLoad -Path $Path -Schema $Schema -Override $Override -Include $Include -Raw:$Raw -Limits $Limits
             $ctx = $r.Ctx
         }
         foreach ($e in $ctx.Errors) { ConvertTo-PsdErrorObject $e }

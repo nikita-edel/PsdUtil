@@ -168,7 +168,7 @@ An included file is its own document, so `!<@name>` inside it is that file.
 
 ### Maps from the caller
 
-`-Include` passes values you only know at run time. It works on `Import-Psd`, `ConvertFrom-Psd` and `Merge-Psd`.
+`-Include` passes values you only know at run time. It works on `Import-Psd`, `ConvertFrom-Psd`, `Merge-Psd`, `Test-Psd`, `Get-PsdError`, `Get-PsdProvenance` and `Resolve-PsdReference`.
 
 ```powershell
 Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'prod'; Root = 'C:\app' } }

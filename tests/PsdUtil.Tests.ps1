@@ -3,7 +3,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../src/PsdUtil/PsdUtil.psd1') -Force
     . (Join-Path $PSScriptRoot 'Helpers.ps1')
-    $script:Examples = Join-Path $PSScriptRoot '../plan/examples'
+    $script:Examples = Join-Path $PSScriptRoot 'examples'
     $env:APP_STAGE = $null
 
     function Import-Text {

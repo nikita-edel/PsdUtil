@@ -36,6 +36,9 @@ function Get-PsdProvenance {
     .SYNOPSIS
     Shows which file and line each value came from, and what it overrode.
 
+    .PARAMETER Include
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
+
     .EXAMPLE
     Get-PsdProvenance ./last.psd1 -Key 'Server.Port'
     #>
@@ -47,9 +50,11 @@ function Get-PsdProvenance {
         [Parameter(Position = 1)]
         [string[]] $Key,
 
-        [object] $Override
+        [object] $Override,
+
+        [System.Collections.IDictionary] $Include
     )
-    $r = Invoke-PsdLoad -Path $Path -Override $Override -Prov
+    $r = Invoke-PsdLoad -Path $Path -Override $Override -Include $Include -Prov
     if ($r.Ctx.Errors.Count -gt 0) { Write-PsdResult $PSCmdlet $r.Ctx ([IO.Path]::GetFileName($Path)); return }
     foreach ($row in (Get-PsdProvenanceRows $r.Doc $r.Value $Key)) { $row }
 }
@@ -58,6 +63,9 @@ function Resolve-PsdReference {
     <#
     .SYNOPSIS
     Shows how one value is worked out, step by step.
+
+    .PARAMETER Include
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
 
     .EXAMPLE
     Resolve-PsdReference ./last.psd1 -Key 'Service.Title'
@@ -70,12 +78,14 @@ function Resolve-PsdReference {
         [Parameter(Mandatory, Position = 1)]
         [string] $Key,
 
-        [object] $Override
+        [object] $Override,
+
+        [System.Collections.IDictionary] $Include
     )
     $ctx = New-PsdContext
     $entry = Read-PsdFile (Resolve-PsdUserPath $Path) $ctx
     if ($null -eq $entry -or $null -eq $entry.Root) { Write-PsdResult $PSCmdlet $ctx ([IO.Path]::GetFileName($Path)); return }
-    $doc = New-PsdFileDoc $entry $ctx $Override
+    $doc = New-PsdFileDoc $entry $ctx $Override -Include $Include
     $segs = ConvertFrom-PsdPathText $Key
     $node = $doc.Tree
     foreach ($s in $segs) {

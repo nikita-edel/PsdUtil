@@ -64,6 +64,18 @@ Describe '-Include' {
         $r.N | Should -Be 'run'
     }
 
+    It 'also works on <Name>' -ForEach @(
+        @{ Name = 'Test-Psd'; Run = { Test-Psd ./app.psd1 -Include @{ run = @{ Root = 'r' } } }; Want = 'True' }
+        @{ Name = 'Get-PsdError'; Run = { @(Get-PsdError ./app.psd1 -Include @{ run = @{ Root = 'r' } }).Count }; Want = '0' }
+        @{ Name = 'Get-PsdProvenance'; Run = { (Get-PsdProvenance ./app.psd1 -Key A -Include @{ run = @{ Root = 'r' } }).Value }; Want = 'r' }
+        @{ Name = 'Resolve-PsdReference'; Run = { @(Resolve-PsdReference ./app.psd1 -Key A -Include @{ run = @{ Root = 'r' } })[-1].Value }; Want = 'r' }
+    ) {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ A = '!<run::Root>' }" }
+        Push-Location $dir
+        try { "$(& $Run)" | Should -Be $Want }
+        finally { Pop-Location }
+    }
+
     It 'does not allow the name this' {
         $dir = New-TestFiles @{ 'app.psd1' = '@{ A = 1 }' }
         Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ this = @{ A = 1 } } } $dir | Should -Contain 'PSD204'

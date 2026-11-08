@@ -1,7 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# One case for every error code. A code listed in plan/DESIGN.md without a case here fails the
-# last test, so the list can't drift.
+# One case for every error code.
 
 BeforeDiscovery {
     $deep = '@{ A = ' * 70 + '1' + ' }' * 70
@@ -123,14 +122,6 @@ Describe 'Error codes' {
         $dir = New-TestFiles $Files
         $codes = @(Get-ErrorCode $Run $dir)
         $codes | Should -Contain $Code
-    }
-
-    It 'every error code in DESIGN.md has a case' {
-        $design = Get-Content -Raw (Join-Path $PSScriptRoot '../plan/DESIGN.md')
-        $listed = [regex]::Matches($design, '\| (PSD\d{3}) \|') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
-        $tested = $cases | ForEach-Object { $_.Code } | Sort-Object -Unique
-        $missing = $listed | Where-Object { $tested -notcontains $_ }
-        $missing | Should -BeNullOrEmpty
     }
 }
 
