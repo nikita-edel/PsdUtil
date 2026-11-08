@@ -173,18 +173,106 @@ function Get-PsdTypeHelperText {
     ) -join "`n"
 }
 
+# A value as a static property name: a character that can't be in a name becomes _, a leading digit gets _,
+# and so do names PowerShell has as variables already: true, false, null, this.
+function ConvertTo-PsdConstantName {
+    param([string] $Value)
+    $n = [regex]::Replace($Value, '[^A-Za-z0-9_]', '_')
+    if ($n -match '^[0-9]' -or $n -in 'true', 'false', 'null', 'this') { $n = '_' + $n }
+    $n
+}
+
+# The type of a static property for a -Constant value.
+function Get-PsdConstantType {
+    param($Value)
+    if ($null -eq $Value) { return 'object' }
+    if ($Value -is [bool]) { return 'bool' }
+    if ($Value -is [int] -or $Value -is [int16] -or $Value -is [byte] -or $Value -is [sbyte] -or $Value -is [uint16]) { return 'int' }
+    if ($Value -is [long] -or $Value -is [uint32]) { return 'long' }
+    if ($Value -is [double] -or $Value -is [single]) { return 'double' }
+    if ($Value -is [decimal] -or $Value -is [uint64]) { return 'decimal' }
+    if (Test-PsdList $Value) { return 'object[]' }
+    # text, and what the writer writes as text: dates, versions, guids, enums
+    if (Test-PsdScalarOut $Value) { return 'string' }
+    # maps and objects are written as @{ }
+    'hashtable'
+}
+
+# Classes of named values from -Constant, one static property each. A list names each value after itself:
+# Region = @('eu-west') gives [Region]::eu_west. A map gives the names: Port = @{ Http = 80 } gives [Port]::Http.
+# Values are written as ConvertTo-Psd writes them, exactly as given, and typed by their kind.
+function Add-PsdConstantClass {
+    param($G, $Constant)
+    $S = @{ Ctx = $G.Ctx; Format = (Get-PsdFormat $null $G.Ctx); Depth = 64; Stack = (New-PsdList); Path = ''; NL = "`n"; Raw = $true }
+    foreach ($class in @($Constant.PSBase.Keys)) {
+        $className = [string]$class
+        if (-not $script:PsdRxIdent.IsMatch($className)) {
+            Add-PsdError $G.Ctx 'PSD512' "-Constant: '$className' isn't a valid class name." -Hint @('Use a name that starts with a letter and has only letters, digits and _.')
+            continue
+        }
+        if ($className -ieq $G.Name -or $G.Names.ContainsKey($className)) {
+            Add-PsdError $G.Ctx 'PSD512' "-Constant: the class name '$className' is already used." -Hint @('Rename the -Constant entry.')
+            continue
+        }
+        $G.Names[$className] = "-Constant $className"
+        # name as written -> value
+        $entries = New-PsdList
+        $given = $Constant[$class]
+        if ($given -is [System.Collections.IDictionary]) {
+            foreach ($k in @($given.PSBase.Keys)) { $entries.Add(@{ Name = [string]$k; Value = $given[$k] }) }
+        }
+        else {
+            foreach ($value in (Get-PsdItems $given)) {
+                if ($null -eq $value -or (Test-PsdContainer $value)) {
+                    Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: a list names each value after itself, so its values can't be $(Get-PsdKindText $value)." -Hint @("To name them yourself, give a map: $className = @{ Name = ... }")
+                    continue
+                }
+                $entries.Add(@{ Name = (Format-PsdScalarText $value); Value = $value })
+            }
+        }
+        $members = [ordered]@{}
+        $lines = New-PsdList
+        foreach ($entry in $entries) {
+            $member = ConvertTo-PsdConstantName $entry.Name
+            if ($member -notmatch '[A-Za-z0-9]') {
+                Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: '$($entry.Name)' can't be a property name." -Hint @('A name needs a letter or digit.')
+                continue
+            }
+            $same = $null
+            foreach ($k in $members.PSBase.Keys) { if ($k -ieq $member) { $same = $k } }
+            if ($null -ne $same) {
+                Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: '$($members[$same])' and '$($entry.Name)' would both become the property '$member'."
+                continue
+            }
+            $members[$member] = $entry.Name
+            $S.Path = "$className.$member"
+            $text = Write-PsdValueText $entry.Value $S 1
+            $lines.Add("    static [$(Get-PsdConstantType $entry.Value)] `$$member = $text")
+        }
+        $G.Constants.Add("class $className {`n$($lines -join "`n")`n}")
+    }
+}
+
 function New-PsdTypeText {
-    param($Rules, [string] $Name, [string] $Command, [string] $OutDir, $Ctx)
+    param($Rules, [string] $Name, [string] $Command, [string] $OutDir, $Ctx, $Constant = $null)
     if (-not $script:PsdRxIdent.IsMatch($Name)) {
         Add-PsdError $Ctx 'PSD512' "'$Name' isn't a valid class name." -Hint @('Use a name that starts with a letter and has only letters, digits and _.')
         return $null
     }
-    $g = @{ Ctx = $Ctx; Name = $Name; OutDir = $OutDir; Enums = [ordered]@{}; Classes = (New-PsdList); Names = @{}; Comments = $null; Helper = "${Name}PsdMap" }
+    $g = @{ Ctx = $Ctx; Name = $Name; OutDir = $OutDir; Enums = [ordered]@{}; Classes = (New-PsdList); Names = @{}; Comments = $null; Helper = "${Name}PsdMap"; Constants = (New-PsdList) }
     $g.Names[$g.Helper] = '(helper)'
+    # first, so a class of the schema with the same name is reported
+    if ($null -ne $Constant) { Add-PsdConstantClass $g $Constant }
     $null = Add-PsdTypeClass $g $Rules ''
+    foreach ($e in @($g.Enums.PSBase.Keys)) {
+        if ($null -ne $Constant -and $Constant.Contains($e)) {
+            Add-PsdError $Ctx 'PSD512' "-Constant: the class name '$e' is also an enum of the schema." -Hint @('Rename the -Constant entry.')
+        }
+    }
     $parts = New-PsdList
     $parts.Add("# Generated by: $Command`n# Do not edit. Run it again after changing the schema.")
     if ($g.Enums.PSBase.Count -gt 0) { $parts.Add((@($g.Enums.PSBase.Values) -join "`n")) }
+    foreach ($c in $g.Constants) { $parts.Add($c) }
     $parts.Add((Get-PsdTypeHelperText $g.Helper))
     foreach ($c in $g.Classes) { $parts.Add($c) }
     ($parts -join "`n`n") + "`n"

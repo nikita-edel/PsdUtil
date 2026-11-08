@@ -5,3 +5,4 @@
 - '!name' in maps given to Merge-Psd
 - -Schema on Merge-Psd
 - Generated classes made from a map keep it, so typed configs can use references, merge operators and !if
+- -Constant on New-PsdType: classes of named values, like [Region]::eu_west or [Port]::Http, for values known only when the types are written

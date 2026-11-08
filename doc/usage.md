@@ -277,6 +277,21 @@ A class made from a map keeps that map, so a typed config can use everything a d
 - The kept map is what gets written, so changing a property afterwards doesn't change the output.
 - An object from `[App]::new()` has no kept map. It's written from its properties, and `Merge-Psd` and `-Override` don't accept it.
 
+`-Constant` adds classes of named values, for values that are known only when the types are written. A list names each value after itself, a map gives the names:
+
+```powershell
+New-PsdType -Schema ./app.schema.psd1 -Path ./App.Types.psm1 -Name App -Constant @{
+    Region = @('eu-west', 'us-east')
+    Port   = @{ Http = 80; Https = 443 }
+}
+```
+
+```powershell
+[App]@{ Region = [Region]::eu_west; Port = [Port]::Https }     # 'eu-west' and 443, [Region]:: completes
+```
+
+Values can be text, numbers, `$true`, `$false`, `$null`, lists and maps, written as `ConvertTo-Psd` writes them and typed by their kind: `[string]`, `[int]`, `[bool]`, `[object[]]`, `[hashtable]` and so on. A character that can't be in a name becomes `_`, a name that starts with a digit gets `_` in front. Two values with one name are an error. The schema doesn't check these values, they're only for completion.
+
 Give nested maps their own cast, or their keys won't complete. On Windows PowerShell 5.1, keys inside `@{ }` only complete after the script has run once in that session, and a relative `using module` path starts at the working directory, so run the script from its own folder.
 
 ## Commands

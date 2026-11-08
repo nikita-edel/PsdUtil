@@ -15,8 +15,20 @@ function New-PsdType {
     .PARAMETER Name
     The name of the top-level class. Nested classes are named after it: App, AppServer, ...
 
+    .PARAMETER Constant
+    Classes of named values, for values that are known only when the types are written. Each entry is a
+    class with one static property per value:
+    a list names each value after itself: Region = @('eu-west') gives [Region]::eu_west, which is 'eu-west';
+    a map gives the names: Port = @{ Http = 80; Https = 443 } gives [Port]::Http, which is 80.
+    Values can be text, numbers, $true, $false, $null, lists and maps; the property is typed by the value
+    ([string], [int], [bool], [object[]], [hashtable], ...). A character that can't be in a name becomes _,
+    a name that starts with a digit gets _ in front. The schema doesn't check these values.
+
     .EXAMPLE
     New-PsdType -Schema ./app.schema.psd1 -Path ./App.Types.psm1 -Name App
+
+    .EXAMPLE
+    New-PsdType -Schema ./app.schema.psd1 -Path ./App.Types.psm1 -Name App -Constant @{ Region = @('eu-west', 'us-east'); Port = @{ Http = 80; Https = 443 } }
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -26,7 +38,9 @@ function New-PsdType {
         [string] $Path,
 
         [Parameter(Mandatory)]
-        [string] $Name
+        [string] $Name,
+
+        [System.Collections.IDictionary] $Constant
     )
     $ctx = New-PsdContext
     $rules = Import-PsdSchemaRules (Resolve-PsdUserPath $Schema) $ctx $null
@@ -35,9 +49,10 @@ function New-PsdType {
         $command = "New-PsdType -Schema $Schema"
         if ($Path) { $command += " -Path $Path" }
         $command += " -Name $Name"
+        if ($Constant) { $command += " -Constant @{ $(@($Constant.PSBase.Keys) -join '; ') }" }
         $outDir = (Get-Location -PSProvider FileSystem).ProviderPath
         if ($Path) { $outDir = [IO.Path]::GetDirectoryName((Resolve-PsdUserPath $Path)) }
-        $text = New-PsdTypeText $rules $Name $command $outDir $ctx
+        $text = New-PsdTypeText $rules $Name $command $outDir $ctx $Constant
     }
     if ($ctx.Errors.Count -eq 0 -and $Path) {
         $full = Resolve-PsdUserPath $Path

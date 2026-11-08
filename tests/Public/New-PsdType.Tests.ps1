@@ -26,6 +26,85 @@ Describe 'Generated types' {
     }
 }
 
+Describe 'Classes of named values from -Constant' {
+    BeforeAll {
+        $script:constDir = New-TestFiles @{ 's.psd1' = "@{ Properties = @{ Region = 'string'; Size = @{ Type = 'string'; Enum = 'S', 'M' } } }" }
+        $script:constGen = {
+            param($Constant)
+            Push-Location $constDir
+            try { New-PsdType -Schema ./s.psd1 -Name App -Constant $Constant }
+            finally { Pop-Location }
+        }
+    }
+
+    It 'types each value and writes it as ConvertTo-Psd does, exactly as given' {
+        $t = & $constGen ([ordered]@{ Port = [ordered]@{ Http = 80; Big = 5000000000; On = $true; Ratio = 0.5; None = $null; Ref = '!<A>'; Tags = @('a', 'b'); Limits = [ordered]@{ Cpu = 8 } } })
+        $t | Should -Match "static \[int\] \`$Http = 80"
+        $t | Should -Match "static \[long\] \`$Big = 5000000000"
+        $t | Should -Match "static \[bool\] \`$On = \`$true"
+        $t | Should -Match "static \[double\] \`$Ratio = 0\.5"
+        $t | Should -Match "static \[object\] \`$None = \`$null"
+        $t | Should -Match "static \[string\] \`$Ref = '!<A>'"
+        $t | Should -Match "static \[object\[\]\] \`$Tags = @\('a', 'b'\)"
+        $t | Should -Match "static \[hashtable\] \`$Limits = @\{"
+    }
+
+    It 'gives the values back, typed' {
+        $mod = Join-Path $constDir 'Values.Types.psm1'
+        Push-Location $constDir
+        try { New-PsdType -Schema ./s.psd1 -Path $mod -Name App -Constant @{ Port = @{ Http = 80; Tags = @('a', 'b'); Limits = @{ Cpu = 8 } }; Flag = @($true, 3) } }
+        finally { Pop-Location }
+        $r = & ([scriptblock]::Create("using module '$mod'`n[Port]::Http; [Port]::Limits.Cpu; [Port]::Tags.Count; [Flag]::_True; [Flag]::_3"))
+        $r[0] | Should -BeOfType [int]
+        $r[0] | Should -Be 80
+        $r[1] | Should -Be 8
+        $r[2] | Should -Be 2
+        $r[3] | Should -BeExactly $true
+        $r[4] | Should -Be 3
+    }
+
+    It 'writes one static string per value, names made valid' {
+        $t = & $constGen ([ordered]@{ Region = @('eu-west', 'us-east', '1st', "it's") })
+        $t | Should -Match "class Region \{"
+        $t | Should -Match "static \[string\] \`$eu_west = 'eu-west'"
+        $t | Should -Match "static \[string\] \`$_1st = '1st'"
+        $t | Should -Match "static \[string\] \`$it_s = 'it''s'"
+        $t | Should -Match '-Constant @\{ Region \}'
+    }
+
+    It 'gives classes that run and complete' {
+        $mod = Join-Path $constDir 'Const.Types.psm1'
+        Push-Location $constDir
+        try { New-PsdType -Schema ./s.psd1 -Path $mod -Name App -Constant @{ Region = @('eu-west') } }
+        finally { Pop-Location }
+        (& ([scriptblock]::Create("using module '$mod'`n[Region]::eu_west"))) | Should -BeExactly 'eu-west'
+        $src = "using module '$mod'`n[Region]::"
+        (TabExpansion2 -inputScript $src -cursorColumn $src.Length).CompletionMatches.CompletionText | Should -Contain 'eu_west'
+    }
+
+    It 'writes an empty class for an empty list' {
+        & $constGen @{ Empty = @() } | Should -Match "class Empty \{\s*\}"
+    }
+
+    It 'is an error for <Case>' -ForEach @(
+        @{ Case = 'two values with one name'; Constant = @{ Region = @('eu-west', 'eu_west') } }
+        @{ Case = 'a value without a letter or digit'; Constant = @{ Region = @('--') } }
+        @{ Case = 'a class name that is no name'; Constant = @{ '1bad' = @('x') } }
+        @{ Case = 'the name of the top class'; Constant = @{ App = @('x') } }
+        @{ Case = 'the name of a class of the schema'; Constant = @{ AppSize = @('x') } }
+        @{ Case = 'a map in a list, which has no name'; Constant = @{ Region = @(@{ A = 1 }) } }
+        @{ Case = 'two names of a map that become one'; Constant = @{ Port = [ordered]@{ 'a-b' = 1; 'a_b' = 2 } } }
+    ) {
+        $c = $Constant
+        Get-ErrorCode { New-PsdType -Schema ./s.psd1 -Name App -Constant $c } $constDir | Should -Contain 'PSD512'
+    }
+
+    It 'leaves the schema check alone' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ Region = 'anything' }"; 's.psd1' = "@{ Properties = @{ Region = 'string' } }" }
+        (Import-Psd (Join-Path $dir 'app.psd1') -Schema (Join-Path $dir 's.psd1')).Region | Should -Be 'anything'
+    }
+}
+
 Describe 'Generated classes keep their map' {
     BeforeAll {
         $schemaText = @"
