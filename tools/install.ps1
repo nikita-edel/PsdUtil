@@ -1,41 +1,76 @@
-#Requires -Version 5.1
 <#
 .SYNOPSIS
-Installs PsdUtil for the current user.
+    Installs the module for the current user, without internet access.
 
 .DESCRIPTION
-Copies the module into the user's module folder, so Import-Module PsdUtil works anywhere.
-On Windows it installs for both Windows PowerShell 5.1 and PowerShell 7.
-On Linux and macOS it installs for PowerShell 7.
+    Copies <Name>/<Version>/ from the folder next to this script into the current user's module folder(s), so
+    that 'Import-Module <Name>' works in new sessions. On Windows that is both Windows PowerShell 5.1
+    (Documents\WindowsPowerShell\Modules) and PowerShell 7 (Documents\PowerShell\Modules); on Linux and macOS
+    ~/.local/share/powershell/Modules. An installed copy of the same version is replaced.
 
-Works from the release zip (install.ps1 next to a PsdUtil folder) and from the repository.
+.PARAMETER SourcePath
+    Folder that holds <Name>/<Version>/. Defaults to the folder of this script, which is right for the release zip.
+
+.PARAMETER ModulePath
+    Module folder(s) to use instead of the default ones.
+
+.PARAMETER Uninstall
+    Remove this version again.
+
+.EXAMPLE
+    ./install.ps1
+
+.EXAMPLE
+    ./install.ps1 -Uninstall
 #>
-[CmdletBinding(SupportsShouldProcess)]
-param()
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseCompatibleCmdlets', '', Justification = 'Unblock-File is only called on Windows.')]
+[CmdletBinding()]
+param(
+    [string]$SourcePath = $PSScriptRoot,
+    [string[]]$ModulePath,
+    [switch]$Uninstall
+)
+
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 
-$source = Join-Path $PSScriptRoot 'PsdUtil'
-if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { $source = Join-Path $PSScriptRoot '../src/PsdUtil' }
-if (-not (Test-Path (Join-Path $source 'PsdUtil.psd1'))) { throw "Can't find PsdUtil.psd1 next to this script or in ../src/PsdUtil." }
-$version = (Import-PowerShellDataFile (Join-Path $source 'PsdUtil.psd1')).ModuleVersion
+# <Name>/<Version>/<Name>.psd1
+$manifests = @(
+    Get-ChildItem -LiteralPath $SourcePath -Directory | Get-ChildItem -Directory | Get-ChildItem -File -Filter '*.psd1' |
+        Where-Object { $_.BaseName -eq $_.Directory.Parent.Name }
+)
+if ($manifests.Count -ne 1) { throw "Expected one module in $SourcePath (<Name>/<Version>/<Name>.psd1), found $($manifests.Count). From the repository, use ./build.ps1 -Install." }
+$moduleName = $manifests[0].BaseName
+$version = $manifests[0].Directory.Name
 
-$onWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$targets = @()
-if ($onWindows) {
-    $docs = [Environment]::GetFolderPath('MyDocuments')
-    $targets += Join-Path $docs 'WindowsPowerShell/Modules'
-    $targets += Join-Path $docs 'PowerShell/Modules'
-}
-else {
-    $targets += Join-Path $HOME '.local/share/powershell/Modules'
-}
-
-foreach ($t in $targets) {
-    $dest = Join-Path $t "PsdUtil/$version"
-    if ($PSCmdlet.ShouldProcess($dest, 'Install PsdUtil')) {
-        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-        New-Item -ItemType Directory -Path $dest -Force | Out-Null
-        Copy-Item -Recurse -Path (Join-Path $source '*') -Destination $dest
-        Write-Host "Installed PsdUtil $version to $dest"
+$roots = $ModulePath
+if (-not $roots) {
+    # $IsWindows does not exist in Windows PowerShell 5.1; -or stops before reading it there.
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+        $documents = [Environment]::GetFolderPath('MyDocuments')
+        $roots = @((Join-Path $documents 'PowerShell/Modules'), (Join-Path $documents 'WindowsPowerShell/Modules'))
+    }
+    else {
+        $dataHome = $env:XDG_DATA_HOME
+        if (-not $dataHome) { $dataHome = Join-Path $HOME '.local/share' }
+        $roots = @(Join-Path $dataHome 'powershell/Modules')
     }
 }
+
+foreach ($root in $roots) {
+    $moduleRoot = Join-Path $root $moduleName
+    $target = Join-Path $moduleRoot $version
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+    if ($Uninstall) {
+        if ((Test-Path -LiteralPath $moduleRoot) -and @(Get-ChildItem -LiteralPath $moduleRoot -Force).Count -eq 0) { Remove-Item -LiteralPath $moduleRoot -Force }
+        Write-Host "Removed $moduleName $version from $root"
+        continue
+    }
+    $null = New-Item -ItemType Directory -Force -Path $target
+    Copy-Item -Path (Join-Path $manifests[0].Directory.FullName '*') -Destination $target -Recurse -Force
+    # Files from a downloaded zip are marked as coming from the internet, which blocks them under RemoteSigned.
+    # Unblock-File exists in PowerShell on Linux and macOS too, but fails there.
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) { Get-ChildItem -LiteralPath $target -Recurse -File | Unblock-File }
+    Write-Host "Installed $moduleName $version to $target"
+}
+if (-not $Uninstall) { Write-Host "In a new session: Import-Module $moduleName" }

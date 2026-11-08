@@ -1,5 +1,3 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
-
 # One case for every error code.
 
 BeforeDiscovery {
@@ -112,8 +110,7 @@ BeforeDiscovery {
 }
 
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot '../src/PsdUtil/PsdUtil.psd1') -Force
-    . (Join-Path $PSScriptRoot 'Helpers.ps1')
+    . (Join-Path -Path $PSScriptRoot -ChildPath 'TestHelpers.ps1')
     $env:PSDUTIL_TEST_NOT_SET = $null
 }
 

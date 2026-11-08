@@ -1,33 +1,5 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
-
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot '../src/PsdUtil/PsdUtil.psd1') -Force
-    . (Join-Path $PSScriptRoot 'Helpers.ps1')
-    $script:Examples = Join-Path $PSScriptRoot 'examples'
-    $env:APP_STAGE = $null
-
-    function Import-Text {
-        param([string] $Text, [hashtable] $More = @{}, [hashtable] $Params = @{})
-        $files = @{ 'main.psd1' = $Text }
-        foreach ($k in $More.Keys) { $files[$k] = $More[$k] }
-        $dir = New-TestFiles $files
-        Import-Psd (Join-Path $dir 'main.psd1') @Params
-    }
-
-    function Get-ExpectedResult {
-        param([string] $Folder)
-        $dir = [IO.Path]::GetFullPath((Join-Path $Examples $Folder))
-        $text = [IO.File]::ReadAllText((Join-Path $dir 'result.psd1')).Replace('C:/app/config', $dir.Replace('\', '/'))
-        $file = Join-Path $TestDrive "expected-$Folder.psd1"
-        [IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding $true))
-        $expected = Import-PowerShellDataFile $file
-        $os = if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) { 'windows' } elseif ($IsMacOS) { 'macos' } else { 'linux' }
-        if ($expected.Contains('Builtins')) {
-            $expected.Builtins.Os = $os
-            if ($os -ne 'windows') { $expected.Checks.Remove('Os') }
-        }
-        $expected
-    }
+    . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'TestHelpers.ps1')
 }
 
 Describe 'The examples' {
@@ -82,19 +54,33 @@ Describe 'Filters' {
 }
 "@
     }
+
     It 'lower' { $r.Lower | Should -BeExactly '  hello world  ' }
+
     It 'upper' { $r.Upper | Should -BeExactly '  HELLO WORLD  ' }
+
     It 'trim' { $r.Trim | Should -BeExactly 'Hello World' }
+
     It 'replace' { $r.Replace | Should -BeExactly '  Hello There  ' }
+
     It 'split' { $r.Split -join '|' | Should -Be 'Hello|World' }
+
     It 'join' { $r.Join | Should -Be 'c-a-c-b' }
+
     It 'first and last' { $r.First | Should -Be 'c'; $r.Last | Should -Be 'b' }
+
     It 'sort' { $r.Sort -join ',' | Should -Be 'a,b,c,c' }
+
     It 'unique keeps the first of each, in order' { $r.Unique -join ',' | Should -Be 'c,a,b' }
+
     It 'count' { $r.Count | Should -Be 4 }
+
     It 'keys and values' { $r.Keys -join ',' | Should -Be 'A,B'; $r.Values -join ',' | Should -Be '1,2' }
+
     It 'pass $null through' { $r.Null | Should -BeNullOrEmpty; $r.Contains('Null') | Should -BeTrue }
+
     It 'first on an empty list is $null' { $r.NoFirst | Should -BeNullOrEmpty }
+
     It 'chain' { $r.Slug | Should -Be 'hello-world' }
 }
 
@@ -265,16 +251,6 @@ Describe 'Merging' {
         , $r.E2 | Should -BeOfType [object[]]
         $r.E2.Count | Should -Be 0
     }
-
-    It 'Merge-Psd merges files and maps, and -Key returns only those keys' {
-        $dir = New-TestFiles @{ 'a.psd1' = "@{ A = 1; Paths = @{ Root = 'r' }; Logging = @{ File = '!<Paths.Root>/x.log' } }" }
-        $m = Merge-Psd (Join-Path $dir 'a.psd1'), @{ A = 2; 'L +=' = @('x') }
-        $m.A | Should -Be 2
-        $m.L -join ',' | Should -Be 'x'
-        $k = Merge-Psd (Join-Path $dir 'a.psd1') -Key Logging
-        @($k.Keys) -join ',' | Should -Be 'Logging'
-        $k.Logging.File | Should -Be 'r/x.log'
-    }
 }
 
 Describe 'Includes and namespaces' {
@@ -340,163 +316,93 @@ Describe 'Files' {
         (Import-Psd $bom).A | Should -Be ([string][char]0xE4)
         (Import-Psd (Join-Path $dir 'crlf.psd1')).B | Should -Be 1
     }
-
-    It 'ConvertFrom-Psd uses -BasePath for relative paths' {
-        $dir = New-TestFiles @{ 'base.psd1' = '@{ A = 1 }' }
-        (ConvertFrom-Psd -Text "@{ '!merge' = './base.psd1'; B = '!<A>' }" -BasePath $dir).B | Should -Be 1
-    }
 }
 
-Describe 'Writing' {
-    It 'round-trips' {
-        $o = [ordered]@{ S = "it's !<x>"; I = 1; L = [long]5; D = 2.0; M = 1.5d; B = $true; N = $null; E = @(); One = @('x'); Nested = [ordered]@{ 'my.key' = @(1, [ordered]@{ A = 'b' }); '!bang' = 1 } }
-        $back = ConvertFrom-Psd -Text (ConvertTo-Psd $o)
-        Compare-TestValue $o $back | Should -BeNullOrEmpty
+Describe '-Include' {
+    BeforeAll {
+        $script:run = @{ run = @{ Stage = 'prod'; Root = 'C:\app' } }
+        $script:app = "@{ Log = '!<run::Root>\log'; '!if !<run::Stage> -eq `"prod`"' = @{ Replicas = 3 } }"
     }
 
-    It 'writes dates, guids, versions, enums and objects' {
-        $t = ConvertTo-Psd ([ordered]@{ D = [datetime]'2026-01-02T03:04:05'; G = [guid]'7f1c2a54-0b6e-4e0a-9d3a-2c1b5e8f4a10'; V = [version]'1.2.3'; E = [System.DayOfWeek]::Monday; O = [pscustomobject]@{ A = 1 } })
-        $t | Should -Match "D = '2026-01-02T03:04:05.0000000'"
-        $t | Should -Match "G = '7f1c2a54-0b6e-4e0a-9d3a-2c1b5e8f4a10'"
-        $t | Should -Match "V = '1.2.3'"
-        $t | Should -Match "E = 'Monday'"
-        $t | Should -Match 'O = @\{'
+    It 'Import-Psd reads the map through its name, also in conditions' {
+        $dir = New-TestFiles @{ 'app.psd1' = $app }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include $run
+        $r.Log | Should -Be 'C:\app\log'
+        $r.Replicas | Should -Be 3
     }
 
-    It 'follows the format options' {
-        $t = ConvertTo-Psd ([ordered]@{ Bb = 1; A = @(1, 2, 3); S = 'x' }) -Format @{ Indent = 2; SortKeys = $true; AlignEquals = $true; InlineArrayMax = 2; Quote = 'Double'; LineEnding = 'LF' }
-        $t | Should -BeExactly "@{`n  A  = @(`n    1`n    2`n    3`n  )`n  Bb = 1`n  S  = `"x`"`n}"
+    It 'is readable from every file in the merge chain' {
+        $dir = New-TestFiles @{ 'base.psd1' = "@{ B = '!<run::Stage>' }"; 'app.psd1' = "@{ '!merge' = './base.psd1' }" }
+        (Import-Psd (Join-Path $dir 'app.psd1') -Include $run).B | Should -Be 'prod'
     }
 
-    It 'Export-Psd writes UTF-8 without BOM by default' {
-        $p = Join-Path $TestDrive 'out.psd1'
-        Export-Psd @{ A = "$([char]0xE4)" } -Path $p
-        $bytes = [IO.File]::ReadAllBytes($p)
-        $bytes[0] | Should -Be ([byte][char]'@')
-        (Import-Psd $p).A | Should -Be ([string][char]0xE4)
-    }
-}
-
-Describe 'Keys and values' {
-    BeforeAll { $script:c = Import-Text "@{ Stage = 'dev'; Server = @{ Port = 1; Tls = @{ Enabled = `$true; Port = 2 } }; Plugins = @('a', 'b'); Token = 't' }" }
-    It 'Test-PsdKey' {
-        Test-PsdKey $c -Key Stage, 'Server.Port' | Should -BeTrue
-        Test-PsdKey $c -Key Stage, Nope | Should -BeFalse
-        Test-PsdKey $c.Server.Tls -Key Enabled, Port -Exact | Should -BeTrue
-        Test-PsdKey $c.Server -Key Port -Exact | Should -BeFalse
-        Test-PsdKey $c -Key Foo, Stage -Any | Should -BeTrue
-        Test-PsdKey $c -Key stage | Should -BeTrue
-        Test-PsdKey $c -Key stage -CaseSensitive | Should -BeFalse
-    }
-    It 'Get-PsdMissingKey and Assert-PsdKey' {
-        Get-PsdMissingKey $c -Key Stage, Nope, 'Server.Nope' | Should -Be @('Nope', 'Server.Nope')
-        { Assert-PsdKey $c -Key Stage, Nope } | Should -Throw '*Nope*'
-        { Assert-PsdKey $c -Key Stage } | Should -Not -Throw
-    }
-    It 'Get-, Set- and Remove-PsdValue' {
-        Get-PsdValue $c -Path 'Server.Tls.Port' | Should -Be 2
-        Get-PsdValue $c -Path 'Plugins[-1]' | Should -Be 'b'
-        Set-PsdValue $c -Path 'Server.Port' -Value 9
-        Set-PsdValue $c -Path 'New.Deep' -Value 'x'
-        $c.Server.Port | Should -Be 9
-        $c.New.Deep | Should -Be 'x'
-        Remove-PsdValue $c -Path 'Token'
-        Remove-PsdValue $c -Path 'Plugins[0]'
-        $c.Contains('Token') | Should -BeFalse
-        $c.Plugins -join ',' | Should -Be 'b'
-    }
-}
-
-Describe 'Editing files' {
-    It 'Update-Psd changes one value and keeps comments' {
-        $dir = New-TestFiles @{ 'f.psd1' = "# top`n@{`n    # port`n    Port = 1   # inline`n    Server = @{`n        Host = 'a'`n    }`n}`n" }
-        $f = Join-Path $dir 'f.psd1'
-        Update-Psd $f -Key Port -Value 2
-        Update-Psd $f -Key 'Server.Debug' -Value $true
-        $t = [IO.File]::ReadAllText($f)
-        $t | Should -Be "# top`n@{`n    # port`n    Port = 2   # inline`n    Server = @{`n        Host = 'a'`n        Debug = `$true`n    }`n}`n"
+    It 'keeps its keys out of the result' {
+        $dir = New-TestFiles @{ 'app.psd1' = $app }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include $run
+        @($r.Keys | Sort-Object) -join ',' | Should -Be 'Log,Replicas'
     }
 
-    It 'Format-Psd re-indents and keeps comments' {
-        $dir = New-TestFiles @{ 'f.psd1' = "@{`n# c`n  A = 1`n      B = @{`n  C = 2   `n  }`n}" }
-        $f = Join-Path $dir 'f.psd1'
-        Format-Psd $f
-        [IO.File]::ReadAllText($f) | Should -BeExactly "@{`n    # c`n    A = 1`n    B = @{`n        C = 2`n    }`n}"
-    }
-}
-
-Describe 'Schema' {
-    It 'passes the everything example' {
-        Test-Psd (Join-Path $Examples 'everything/app.psd1') | Should -BeTrue
-        @(Get-PsdError (Join-Path $Examples 'everything/app.psd1')).Count | Should -Be 0
+    It 'is not checked by the schema' {
+        $dir = New-TestFiles @{ 'app.psd1' = $app; 's.psd1' = "@{ Properties = @{ Log = 'string'; Replicas = 'int' } }" }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include $run -Schema (Join-Path $dir 's.psd1')
+        $r.Replicas | Should -Be 3
     }
 
-    It 'checks enums from !types and .NET' {
-        $dir = New-TestFiles @{ 'T.psm1' = 'enum Level { Debug; Info }'; 's.psd1' = "@{ '!types' = './T.psm1'; Properties = @{ L = '[Level]'; D = '[System.DayOfWeek]'; V = '[version]' } }" }
-        Test-PsdSchema @{ L = 'info'; D = 'Monday'; V = '1.2' } -Schema (Join-Path $dir 's.psd1') | Should -BeTrue
-        Test-PsdSchema @{ L = 'Loud' } -Schema (Join-Path $dir 's.psd1') | Should -BeFalse
-        (Get-PsdError -InputObject @{ L = 'Loud' } -Schema (Join-Path $dir 's.psd1')).Code | Should -Be 'PSD504'
+    It 'works like an included file: references and @name inside the map' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ V = '!<run::Url>'; N = '!<run::Who>' }" }
+        $inc = @{ run = @{ Host = 'h'; Url = 'http://!<Host>'; Who = '!<@name>' } }
+        $r = Import-Psd (Join-Path $dir 'app.psd1') -Include $inc
+        $r.V | Should -Be 'http://h'
+        $r.N | Should -Be 'run'
     }
 
-    It 'Add-PsdDefault fills in missing keys only' {
-        $dir = New-TestFiles @{ 's.psd1' = "@{ Properties = @{ A = @{ Type = 'int'; Default = 3 }; B = @{ Type = 'int'; Default = 4 } } }" }
-        $o = [ordered]@{ B = 1 }
-        Add-PsdDefault $o -Schema (Join-Path $dir 's.psd1')
-        $o.A | Should -Be 3
-        $o.B | Should -Be 1
-    }
-
-    It 'New-PsdSchema infers types' {
-        $s = New-PsdSchema -InputObject ([ordered]@{ A = 1; L = @('x'); M = @{ B = $true } })
-        $s.Properties.A | Should -Be 'int'
-        $s.Properties.L | Should -Be 'string[]'
-        $s.Properties.M.Properties.B | Should -Be 'bool'
-    }
-}
-
-Describe 'Generated types' {
-    It 'matches examples/typed/App.Types.psm1' {
-        Push-Location (Join-Path $Examples 'typed')
-        try { $gen = New-PsdType -Schema ../config/app.schema.psd1 -Name App }
+    It 'also works on <Name>' -ForEach @(
+        @{ Name = 'Test-Psd'; Run = { Test-Psd ./app.psd1 -Include @{ run = @{ Root = 'r' } } }; Want = 'True' }
+        @{ Name = 'Get-PsdError'; Run = { @(Get-PsdError ./app.psd1 -Include @{ run = @{ Root = 'r' } }).Count }; Want = '0' }
+        @{ Name = 'Get-PsdProvenance'; Run = { (Get-PsdProvenance ./app.psd1 -Key A -Include @{ run = @{ Root = 'r' } }).Value }; Want = 'r' }
+        @{ Name = 'Resolve-PsdReference'; Run = { @(Resolve-PsdReference ./app.psd1 -Key A -Include @{ run = @{ Root = 'r' } })[-1].Value }; Want = 'r' }
+    ) {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ A = '!<run::Root>' }" }
+        Push-Location $dir
+        try { "$(& $Run)" | Should -Be $Want }
         finally { Pop-Location }
-        $expected = [IO.File]::ReadAllText((Join-Path $Examples 'typed/App.Types.psm1')).Replace("`r`n", "`n")
-        $gen.Replace(' -Name App', ' -Path ./App.Types.psm1 -Name App') | Should -BeExactly $expected
     }
 
-    It 'gives classes that run and complete' {
-        Push-Location (Join-Path $Examples 'typed')
-        try {
-            $o = & ./app.config.ps1
-            $mod = (Resolve-Path ./App.Types.psm1).Path
-            $src = "using module $mod`n`$s = [AppServer]::new(); `$s."
-            $r = TabExpansion2 -inputScript $src -cursorColumn $src.Length
-        }
-        finally { Pop-Location }
-        $o.Server.Port | Should -Be 9000
-        $o.Logging.Level | Should -Be 'Warn'
-        $r.CompletionMatches.CompletionText | Should -Contain 'Host'
-    }
-}
-
-Describe 'Debug commands' {
-    It 'Compare-Psd lists changes' {
-        $d = Compare-Psd @{ A = 1; B = @(1, 2); C = 'x' } @{ A = 2; B = @(1); D = 'y' }
-        ($d | Where-Object Path -eq 'A').Change | Should -Be 'changed'
-        ($d | Where-Object Path -eq 'B[1]').Change | Should -Be 'removed'
-        ($d | Where-Object Path -eq 'C').Change | Should -Be 'removed'
-        ($d | Where-Object Path -eq 'D').Change | Should -Be 'added'
+    It 'does not allow the name this' {
+        $dir = New-TestFiles @{ 'app.psd1' = '@{ A = 1 }' }
+        Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ this = @{ A = 1 } } } $dir | Should -Contain 'PSD204'
     }
 
-    It 'Get-PsdProvenance shows source and overrides' {
-        $p = Get-PsdProvenance (Join-Path $Examples 'config/last.psd1') -Key 'Server.Port'
-        $p.Value | Should -Be 9000
-        $p.Source | Should -Be 'next.psd1:5:24'
-        $p.Overrides | Should -Be 'base.psd1:19:16'
+    It 'gives PSD203 for a name used by <Case>' -ForEach @(
+        @{ Case = 'the file itself'; Entry = 'run.psd1'; Files = @{ 'run.psd1' = '@{ A = 1 }' } }
+        @{ Case = 'a merged file'; Entry = 'app.psd1'; Files = @{ 'app.psd1' = "@{ '!merge' = './run.psd1' }"; 'run.psd1' = '@{ A = 1 }' } }
+        @{ Case = 'an included file'; Entry = 'app.psd1'; Files = @{ 'app.psd1' = "@{ '!include' = './run.psd1' }"; 'run.psd1' = '@{ A = 1 }' } }
+    ) {
+        $dir = New-TestFiles $Files
+        $entryFile = $Entry
+        Get-ErrorCode { Import-Psd "./$entryFile" -Include @{ run = @{ A = 1 } } } $dir | Should -Contain 'PSD203'
     }
 
-    It 'Resolve-PsdReference shows the steps' {
-        $steps = @(Resolve-PsdReference (Join-Path $Examples 'config/last.psd1') -Key 'Service.Title')
-        $steps[-1].Value | Should -Be 'LAST (dev)'
-        ($steps | Where-Object { $_.Step.Trim() -eq '| upper' }).Value | Should -Be 'LAST'
+    It 'gives PSD301 with a suggestion for a missing key' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ A = '!<run::Stgae>' }" }
+        $t = Get-ErrorText { Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'x' } } } $dir
+        "$t" | Should -Match 'PSD301'
+        "$t" | Should -Match "Did you mean 'Stage'"
+    }
+
+    It 'gives PSD206 for a value that is not a map, or a bad name' {
+        $dir = New-TestFiles @{ 'app.psd1' = '@{ A = 1 }' }
+        Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ run = 5 } } $dir | Should -Contain 'PSD206'
+        Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ 'a b' = @{} } } $dir | Should -Contain 'PSD206'
+    }
+
+    It 'reports problems in parts nothing reads, like an included file' {
+        $dir = New-TestFiles @{ 'app.psd1' = '@{ A = 1 }' }
+        Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ run = @{ B = '!<Nope>' } } } $dir | Should -Contain 'PSD301'
+    }
+
+    It 'can not be read from inside an included file' {
+        $dir = New-TestFiles @{ 'app.psd1' = "@{ '!include' = './s.psd1'; A = '!<s::B>' }"; 's.psd1' = "@{ B = '!<run::Stage>' }" }
+        Get-ErrorCode { Import-Psd ./app.psd1 -Include @{ run = @{ Stage = 'x' } } } $dir | Should -Contain 'PSD302'
     }
 }

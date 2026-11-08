@@ -129,3 +129,17 @@ function Remove-PsdObjectPath {
     if ($parentSegs.Count -eq 0) { return @{ Code = 'PSD308'; Message = "an item can't be removed from the top-level list itself." } }
     Set-PsdObjectPath $Object $parentSegs ($items.ToArray())
 }
+
+function Write-PsdPathError {
+    param($Cmdlet, $R, [string] $Path)
+    $ctx = New-PsdContext
+    $hint = @()
+    if ($R.ContainsKey('Keys') -and $R['Keys']) {
+        $last = $Path
+        $m = [regex]::Match($Path, '([^.\[\]"]+)"?$')
+        if ($m.Success) { $last = $m.Groups[1].Value }
+        $hint = @((Get-PsdDidYouMean $last $R['Keys']))
+    }
+    Add-PsdError $ctx $R.Code $R.Message -Key $Path -Hint $hint
+    Write-PsdResult $Cmdlet $ctx $null
+}
