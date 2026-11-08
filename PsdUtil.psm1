@@ -1,15 +1,12 @@
-Set-StrictMode -Version 3.0
+# Root module: loads every function from Private/ and Public/.
+# Only the functions listed in FunctionsToExport of the manifest are visible to users.
 
-foreach ($folder in 'Private', 'Public') {
-    foreach ($file in Get-ChildItem -Path (Join-Path $PSScriptRoot $folder) -Filter '*.ps1') {
+Set-StrictMode -Version Latest
+
+foreach ($folder in @('Private', 'Public')) {
+    $folderPath = Join-Path -Path $PSScriptRoot -ChildPath $folder
+    if (-not (Test-Path -LiteralPath $folderPath)) { continue }
+    foreach ($file in @(Get-ChildItem -LiteralPath $folderPath -Filter '*.ps1' -Recurse | Sort-Object -Property FullName)) {
         . $file.FullName
     }
 }
-
-Export-ModuleMember -Function @(
-    'Import-Psd', 'ConvertFrom-Psd', 'ConvertTo-Psd', 'Export-Psd', 'Merge-Psd',
-    'Test-Psd', 'Get-PsdError', 'Test-PsdSchema', 'Test-PsdKey', 'Get-PsdMissingKey', 'Assert-PsdKey',
-    'Get-PsdValue', 'Set-PsdValue', 'Remove-PsdValue', 'Update-Psd', 'Format-Psd',
-    'Add-PsdDefault', 'New-PsdSchema', 'New-PsdType',
-    'Compare-Psd', 'Resolve-PsdReference', 'Get-PsdProvenance'
-)
