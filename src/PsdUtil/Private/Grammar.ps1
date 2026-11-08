@@ -10,6 +10,8 @@ $script:PsdRxEnvName = New-Object regex '\G[A-Za-z_][A-Za-z0-9_]*'
 $script:PsdRxCmpOp = New-Object regex '\G-(eq|ne|gt|ge|lt|le|in|like|match)(?![A-Za-z0-9_])', 'IgnoreCase'
 $script:PsdRxWord = New-Object regex '\G(true|false|null)(?![A-Za-z0-9_\-])', 'IgnoreCase'
 $script:PsdRxPlainKey = New-Object regex '^[A-Za-z_][A-Za-z0-9_\-]*$'
+$script:PsdRxIdent = New-Object regex '^[A-Za-z_][A-Za-z0-9_]*$'
+$script:PsdRxFileName = New-Object regex '^[^\s"<>|?()\[\],:@!]+$'
 
 function New-PsdParser {
     param([string] $Text, [int] $Pos = 0)
@@ -52,6 +54,15 @@ function Get-PsdCharText {
     "'" + $P.T[$P.P] + "'"
 }
 
+# The text of a regex match at this position, moving past it, or $null if it doesn't match here.
+function Read-PsdMatch {
+    param($P, [regex] $Rx)
+    $m = $Rx.Match($P.T, $P.P)
+    if (-not $m.Success) { return $null }
+    $P.P += $m.Length
+    $m.Value
+}
+
 function Read-PsdString {
     param($P)
     $t = $P.T
@@ -72,131 +83,122 @@ function Read-PsdString {
     $sb.ToString()
 }
 
-function Read-PsdNumber {
-    param($P)
-    $m = $script:PsdRxNumber.Match($P.T, $P.P)
-    $P.P += $m.Length
-    if ($m.Groups[1].Success) { return [double]::Parse($m.Value, $script:PsdInvariant) }
-    $n = [long]::Parse($m.Value, $script:PsdInvariant)
+# Text of digits as a whole number: [int] if it fits, else [long].
+function ConvertFrom-PsdIntText {
+    param($P, [string] $Text, [int] $At)
+    $n = [long]0
+    if (-not [long]::TryParse($Text, [System.Globalization.NumberStyles]::AllowLeadingSign, $script:PsdInvariant, [ref]$n)) {
+        Stop-PsdParse $P "the number $Text is too big." $At $Text.Length
+    }
     if ($n -ge [int]::MinValue -and $n -le [int]::MaxValue) { return [int]$n }
     $n
 }
 
-function Test-PsdNumberStart {
+# A number, true, false or null at this position as a Lit operand, or $null if there is none.
+function Read-PsdLiteral {
     param($P)
-    $t = $P.T
-    if ($P.P -ge $t.Length) { return $false }
-    $c = $t[$P.P]
-    if ([char]::IsDigit($c)) { return $true }
-    ($c -eq '-') -and ($P.P + 1 -lt $t.Length) -and [char]::IsDigit($t[$P.P + 1])
+    $start = $P.P
+    $m = $script:PsdRxNumber.Match($P.T, $P.P)
+    if ($m.Success) {
+        $P.P += $m.Length
+        if ($m.Groups[1].Success) { $v = [double]::Parse($m.Value, $script:PsdInvariant) }
+        else { $v = ConvertFrom-PsdIntText $P $m.Value $start }
+        return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
+    }
+    $w = Read-PsdMatch $P $script:PsdRxWord
+    if ($null -eq $w) { return $null }
+    @{ T = 'Lit'; V = @{ true = $true; false = $false }[$w]; Start = $start; End = $P.P }
 }
 
 function Read-PsdKey {
     param($P)
     $start = $P.P
-    if ($P.P -lt $P.T.Length -and $P.T[$P.P] -eq '"') {
-        $k = Read-PsdString $P
-        return @{ Key = $k; Index = 0; IsIndex = $false; Start = $start; End = $P.P }
+    if (Test-PsdAt $P '"') { $k = Read-PsdString $P }
+    else {
+        $k = Read-PsdMatch $P $script:PsdRxName
+        if ($null -eq $k) {
+            if (Test-PsdAt $P '!') { Stop-PsdParse $P "a reference can't contain another !<...>. Write the key path directly: !<A.B>." }
+            Stop-PsdParse $P "expected a key name here, but found $(Get-PsdCharText $P). Keys with spaces, dots or other signs go in double quotes: !<""my.key"">."
+        }
     }
-    $m = $script:PsdRxName.Match($P.T, $P.P)
-    if (-not $m.Success) {
-        if ($P.P -lt $P.T.Length -and $P.T[$P.P] -eq '!') { Stop-PsdParse $P "a reference can't contain another !<...>. Write the key path directly: !<A.B>." }
-        Stop-PsdParse $P "expected a key name here, but found $(Get-PsdCharText $P). Keys with spaces, dots or other signs go in double quotes: !<""my.key"">."
-    }
-    $P.P += $m.Length
-    @{ Key = $m.Value; Index = 0; IsIndex = $false; Start = $start; End = $P.P }
+    @{ Key = $k; Index = 0; IsIndex = $false; Start = $start; End = $P.P }
 }
 
 function Read-PsdPath {
     param($P)
     $start = $P.P
     $path = @{ T = 'Path'; Ns = $null; Env = $null; Builtin = $null; Segs = (New-PsdList); Optional = $false; Start = $start; End = $start }
-    $t = $P.T
 
-    $m = $script:PsdRxEnv.Match($t, $P.P)
-    if ($m.Success) {
-        $P.P += 4
-        if ($P.P -lt $t.Length -and $t[$P.P] -eq '"') { $path.Env = Read-PsdString $P }
+    if ($null -ne (Read-PsdMatch $P $script:PsdRxEnv)) {
+        if (Test-PsdAt $P '"') { $path.Env = Read-PsdString $P }
         else {
-            $n = $script:PsdRxEnvName.Match($t, $P.P)
-            if (-not $n.Success) { Stop-PsdParse $P 'expected the name of an environment variable after env:.' }
-            $path.Env = $n.Value
-            $P.P += $n.Length
+            $path.Env = Read-PsdMatch $P $script:PsdRxEnvName
+            if ($null -eq $path.Env) { Stop-PsdParse $P 'expected the name of an environment variable after env:.' }
         }
         $path.End = $P.P
         return $path
     }
 
-    $m = $script:PsdRxNs.Match($t, $P.P)
-    if ($m.Success) {
-        $path.Ns = $m.Groups[1].Value
-        $P.P += $m.Length
-    }
+    $ns = Read-PsdMatch $P $script:PsdRxNs
+    if ($ns) { $path.Ns = $ns.Substring(0, $ns.Length - 2) }
 
     if (Test-PsdAt $P '@') {
         $P.P++
-        $n = $script:PsdRxName.Match($t, $P.P)
-        if (-not $n.Success) { Stop-PsdParse $P 'expected a built-in name after @, like @name or @dir.' }
-        $path.Builtin = $n.Value
-        $P.P += $n.Length
+        $path.Builtin = Read-PsdMatch $P $script:PsdRxName
+        if ($null -eq $path.Builtin) { Stop-PsdParse $P 'expected a built-in name after @, like @name or @dir.' }
         $path.End = $P.P
         return $path
     }
 
     $path.Segs.Add((Read-PsdKey $P))
-    while ($P.P -lt $t.Length) {
-        if ($t[$P.P] -eq '.') {
+    while ($true) {
+        if (Test-PsdAt $P '.') {
             $P.P++
             $path.Segs.Add((Read-PsdKey $P))
         }
-        elseif ($t[$P.P] -eq '[') {
-            $segStart = $P.P
-            $P.P++
-            Skip-PsdSpace $P
-            $n = $script:PsdRxInt.Match($t, $P.P)
-            if (-not $n.Success) { Stop-PsdParse $P 'expected a number inside [ ], like [0] or [-1].' }
-            $P.P += $n.Length
-            Skip-PsdSpace $P
-            if (-not (Test-PsdAt $P ']')) { Stop-PsdParse $P 'expected ] to close the index.' }
-            $P.P++
-            $path.Segs.Add(@{ Key = $null; Index = [int]$n.Value; IsIndex = $true; Start = $segStart; End = $P.P })
-        }
+        elseif (Test-PsdAt $P '[') { $path.Segs.Add((Read-PsdIndex $P)) }
         else { break }
     }
     $path.End = $P.P
     $path
 }
 
+function Read-PsdIndex {
+    param($P)
+    $start = $P.P
+    $P.P++
+    Skip-PsdSpace $P
+    $at = $P.P
+    $n = Read-PsdMatch $P $script:PsdRxInt
+    if ($null -eq $n) { Stop-PsdParse $P 'expected a number inside [ ], like [0] or [-1].' }
+    $index = ConvertFrom-PsdIntText $P $n $at
+    if ($index -isnot [int]) { Stop-PsdParse $P "the index $n is too big." $at $n.Length }
+    Skip-PsdSpace $P
+    if (-not (Test-PsdAt $P ']')) { Stop-PsdParse $P 'expected ] to close the index.' }
+    $P.P++
+    @{ Key = $null; Index = $index; IsIndex = $true; Start = $start; End = $P.P }
+}
+
 function Read-PsdOperand {
     param($P, [bool] $KeyFirst = $false)
     Skip-PsdSpace $P
     $start = $P.P
-    $t = $P.T
-    if ($P.P -ge $t.Length) { Stop-PsdParse $P 'expected a key, text or a number here.' }
-    if ($t[$P.P] -eq '>') { Stop-PsdParse $P 'expected a key, text or a number here, but the reference ends.' }
-    $optional = $false
-    if ((Test-PsdAt $P '?') -and -not (Test-PsdAt $P '??')) {
-        $optional = $true
+    if ($P.P -ge $P.T.Length) { Stop-PsdParse $P 'expected a key, text or a number here.' }
+    if (Test-PsdAt $P '>') { Stop-PsdParse $P 'expected a key, text or a number here, but the reference ends.' }
+    $optional = (Test-PsdAt $P '?') -and -not (Test-PsdAt $P '??')
+    if ($optional) {
         $P.P++
         Skip-PsdSpace $P
     }
-    if (-not $optional) {
-        if (-not $KeyFirst -and $P.P -lt $t.Length -and $t[$P.P] -eq '"') {
+    else {
+        if (-not $KeyFirst -and (Test-PsdAt $P '"')) {
             $v = Read-PsdString $P
-            if ($P.P -lt $t.Length -and ($t[$P.P] -eq '.' -or $t[$P.P] -eq '[')) { $P.P = $start }
-            else { return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P } }
+            # "my.key".Sub and "my.key"[0] are quoted keys, not text.
+            if (-not (Test-PsdAt $P '.') -and -not (Test-PsdAt $P '[')) { return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P } }
+            $P.P = $start
         }
-        if ($P.P -eq $start -and (Test-PsdNumberStart $P)) {
-            $v = Read-PsdNumber $P
-            return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
-        }
-        $w = $script:PsdRxWord.Match($t, $P.P)
-        if ($w.Success) {
-            $P.P += $w.Length
-            $v = $null
-            switch ($w.Value.ToLowerInvariant()) { 'true' { $v = $true } 'false' { $v = $false } }
-            return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
-        }
+        $lit = Read-PsdLiteral $P
+        if ($lit) { return $lit }
     }
     $path = Read-PsdPath $P
     $path.Optional = $optional
@@ -211,42 +213,44 @@ function Read-PsdExpr {
     $ops.Add((Read-PsdOperand $P $KeyFirst))
     while ($true) {
         Skip-PsdSpace $P
-        if (Test-PsdAt $P '??') {
-            $P.P += 2
-            $ops.Add((Read-PsdOperand $P))
-        }
-        else { break }
+        if (-not (Test-PsdAt $P '??')) { break }
+        $P.P += 2
+        $ops.Add((Read-PsdOperand $P))
     }
     $filters = New-PsdList
     while ($true) {
         Skip-PsdSpace $P
         if (-not (Test-PsdAt $P '|')) { break }
-        $fs = $P.P
-        $P.P++
-        Skip-PsdSpace $P
-        $m = $script:PsdRxName.Match($P.T, $P.P)
-        if (-not $m.Success) { Stop-PsdParse $P 'expected a filter name after |, like | lower.' }
-        $name = $m.Value
-        $P.P += $m.Length
-        $fargs = New-PsdList
-        Skip-PsdSpace $P
-        if (Test-PsdAt $P '(') {
-            $P.P++
-            Skip-PsdSpace $P
-            if (Test-PsdAt $P ')') { $P.P++ }
-            else {
-                while ($true) {
-                    $fargs.Add((Read-PsdExpr $P))
-                    Skip-PsdSpace $P
-                    if (Test-PsdAt $P ',') { $P.P++; continue }
-                    if (Test-PsdAt $P ')') { $P.P++; break }
-                    Stop-PsdParse $P "expected , or ) in the arguments of '$name', but found $(Get-PsdCharText $P)."
-                }
-            }
-        }
-        $filters.Add(@{ Name = $name; Args = $fargs; Start = $fs; End = $P.P })
+        $filters.Add((Read-PsdFilter $P))
     }
     @{ T = 'Expr'; Ops = $ops; Filters = $filters; Start = $start; End = $P.P }
+}
+
+# Reads '| name' or '| name(a, b)' starting at the '|'.
+function Read-PsdFilter {
+    param($P)
+    $start = $P.P
+    $P.P++
+    Skip-PsdSpace $P
+    $name = Read-PsdMatch $P $script:PsdRxName
+    if ($null -eq $name) { Stop-PsdParse $P 'expected a filter name after |, like | lower.' }
+    $fargs = New-PsdList
+    Skip-PsdSpace $P
+    if (Test-PsdAt $P '(') {
+        $P.P++
+        Skip-PsdSpace $P
+        if (Test-PsdAt $P ')') { $P.P++ }
+        else {
+            while ($true) {
+                $fargs.Add((Read-PsdExpr $P))
+                Skip-PsdSpace $P
+                if (Test-PsdAt $P ',') { $P.P++; continue }
+                if (Test-PsdAt $P ')') { $P.P++; break }
+                Stop-PsdParse $P "expected , or ) in the arguments of '$name', but found $(Get-PsdCharText $P)."
+            }
+        }
+    }
+    @{ Name = $name; Args = $fargs; Start = $start; End = $P.P }
 }
 
 # Reads '!<' expr '>' starting at the '!<'. Returns a Ref part.
@@ -268,27 +272,24 @@ function Read-PsdRef {
 function ConvertFrom-PsdTemplate {
     param([string] $Text)
     $parts = New-PsdList
-    $sb = New-Object System.Text.StringBuilder
-    $i = 0
+    $p = New-PsdParser $Text
+    $literal = ''
     $hasRef = $false
-    while ($i -lt $Text.Length) {
-        if ($Text[$i] -eq '!' -and $i + 2 -lt $Text.Length -and $Text[$i + 1] -eq '!' -and $Text[$i + 2] -eq '<') {
-            [void]$sb.Append('!<')
-            $i += 3
+    while ($p.P -lt $Text.Length) {
+        $at = $Text.IndexOf('!<', $p.P, [StringComparison]::Ordinal)
+        if ($at -lt 0) { $literal += $Text.Substring($p.P); break }
+        if ($at -gt $p.P -and $Text[$at - 1] -eq '!') {
+            $literal += $Text.Substring($p.P, $at - 1 - $p.P) + '!<'
+            $p.P = $at + 2
             continue
         }
-        if ($Text[$i] -eq '!' -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '<') {
-            if ($sb.Length -gt 0) { $parts.Add($sb.ToString()); [void]$sb.Clear() }
-            $p = New-PsdParser $Text $i
-            $parts.Add((Read-PsdRef $p))
-            $hasRef = $true
-            $i = $p.P
-            continue
-        }
-        [void]$sb.Append($Text[$i])
-        $i++
+        $literal += $Text.Substring($p.P, $at - $p.P)
+        if ($literal) { $parts.Add($literal); $literal = '' }
+        $p.P = $at
+        $parts.Add((Read-PsdRef $p))
+        $hasRef = $true
     }
-    if ($sb.Length -gt 0) { $parts.Add($sb.ToString()) }
+    if ($literal) { $parts.Add($literal) }
     @{ Parts = $parts; HasRef = $hasRef }
 }
 
@@ -307,26 +308,26 @@ function ConvertFrom-PsdCondition {
     $c
 }
 
-function Read-PsdOr {
-    param($P)
-    $l = Read-PsdAnd $P
+# Operands joined by one word, like a -and b -and c. Next is the function that reads an operand.
+function Read-PsdChain {
+    param($P, [string] $Word, [string] $Type, [string] $Next)
+    $l = & $Next $P
     while ($true) {
         Skip-PsdSpace $P
-        if (Test-PsdWordAt $P '-or') { $P.P += 3; $r = Read-PsdAnd $P; $l = @{ T = 'Or'; L = $l; R = $r } }
-        else { break }
+        if (-not (Test-PsdWordAt $P $Word)) { return $l }
+        $P.P += $Word.Length
+        $l = @{ T = $Type; L = $l; R = (& $Next $P) }
     }
-    $l
+}
+
+function Read-PsdOr {
+    param($P)
+    Read-PsdChain $P '-or' 'Or' 'Read-PsdAnd'
 }
 
 function Read-PsdAnd {
     param($P)
-    $l = Read-PsdNot $P
-    while ($true) {
-        Skip-PsdSpace $P
-        if (Test-PsdWordAt $P '-and') { $P.P += 4; $r = Read-PsdNot $P; $l = @{ T = 'And'; L = $l; R = $r } }
-        else { break }
-    }
-    $l
+    Read-PsdChain $P '-and' 'And' 'Read-PsdNot'
 }
 
 function Read-PsdNot {
@@ -369,24 +370,14 @@ function Read-PsdCondValue {
     param($P)
     Skip-PsdSpace $P
     $start = $P.P
-    $t = $P.T
     if (Test-PsdAt $P '!<') { return (Read-PsdRef $P) }
-    if ($P.P -lt $t.Length -and $t[$P.P] -eq '"') {
+    if (Test-PsdAt $P '"') {
         $v = Read-PsdString $P
         return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
     }
-    if (Test-PsdNumberStart $P) {
-        $v = Read-PsdNumber $P
-        return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
-    }
-    $w = $script:PsdRxWord.Match($t, $P.P)
-    if ($w.Success) {
-        $P.P += $w.Length
-        $v = $null
-        switch ($w.Value.ToLowerInvariant()) { 'true' { $v = $true } 'false' { $v = $false } }
-        return @{ T = 'Lit'; V = $v; Start = $start; End = $P.P }
-    }
-    $n = $script:PsdRxName.Match($t, $P.P)
+    $lit = Read-PsdLiteral $P
+    if ($lit) { return $lit }
+    $n = $script:PsdRxName.Match($P.T, $P.P)
     if ($n.Success) {
         Stop-PsdParse $P "'$($n.Value)' needs to be a reference here: !<$($n.Value)>. Text in a condition goes in double quotes." $P.P $n.Length
     }

@@ -27,14 +27,23 @@ function Resolve-PsdPaths {
             Add-PsdNodeError $Ctx 'PSD202' "nothing matches '$Pattern'." $Node -Hint @("Looked in $dir")
             return , $out
         }
-        $sorted = New-PsdList
-        foreach ($f in $files) { $sorted.Add($f) }
-        $sorted.Sort([Comparison[object]] { param($a, $b) [string]::Compare([string]$a, [string]$b, [StringComparison]::OrdinalIgnoreCase) })
-        foreach ($f in $sorted) { $out.Add([IO.Path]::GetFullPath($f)) }
+        [Array]::Sort($files, [StringComparer]::OrdinalIgnoreCase)
+        foreach ($f in $files) { $out.Add([IO.Path]::GetFullPath($f)) }
         return , $out
     }
     $out.Add([IO.Path]::GetFullPath($full))
     , $out
+}
+
+function New-PsdLayer {
+    param($File, $Only = $null)
+    @{ File = $File; Only = $Only; Root = $null }
+}
+
+function Test-PsdOnStack {
+    param($Stack, [string] $Key)
+    foreach ($s in $Stack) { if ($s.Key -eq $Key) { return $true } }
+    $false
 }
 
 function Get-PsdChainText {
@@ -65,10 +74,7 @@ function Get-PsdLayers {
     $Stack.Add($File)
     foreach ($m in $File.Merge) {
         foreach ($p in (Resolve-PsdPaths $m.Path $File $m.Node $Ctx)) {
-            $k = Get-PsdPathKey $p
-            $loop = $false
-            foreach ($s in $Stack) { if ($s.Key -eq $k) { $loop = $true } }
-            if ($loop) {
+            if (Test-PsdOnStack $Stack (Get-PsdPathKey $p)) {
                 Add-PsdNodeError $Ctx 'PSD201' 'these files merge each other in a circle.' $m.Node -Extra @((Get-PsdChainText $Stack $p), '') -Hint @("Remove one of the '!merge' lines.")
                 continue
             }
@@ -79,9 +85,7 @@ function Get-PsdLayers {
                 $have = New-PsdList
                 foreach ($l in $subLayers) { foreach ($x in (Get-PsdTopKeys $l.File.Root)) { $have.Add($x) } }
                 foreach ($want in $m.Only) {
-                    $found = $false
-                    foreach ($h in $have) { if ($h -ieq $want) { $found = $true; break } }
-                    if (-not $found) {
+                    if ($have -inotcontains $want) {
                         Add-PsdNodeError $Ctx 'PSD207' "'$want' isn't a key in $($sub.Name + $sub.Ext)." $m.Node -Hint @((Get-PsdDidYouMean $want $have))
                     }
                 }
@@ -89,15 +93,15 @@ function Get-PsdLayers {
                     $keys = $m.Only
                     if ($l.Only) {
                         $keys = New-PsdList
-                        foreach ($x in $l.Only) { foreach ($y in $m.Only) { if ($x -ieq $y) { $keys.Add($x) } } }
+                        foreach ($x in $l.Only) { if ($m.Only -icontains $x) { $keys.Add($x) } }
                     }
-                    $result.Add(@{ File = $l.File; Only = $keys; Root = $null })
+                    $result.Add((New-PsdLayer $l.File $keys))
                 }
             }
             else { foreach ($l in $subLayers) { $result.Add($l) } }
         }
     }
-    $result.Add(@{ File = $File; Only = $null; Root = $null })
+    $result.Add((New-PsdLayer $File))
     $Stack.RemoveAt($Stack.Count - 1)
 
     # A file reached twice is used once, where it first appears.
@@ -110,8 +114,8 @@ function Get-PsdLayers {
             elseif ($first.Only) { foreach ($x in $l.Only) { $first.Only.Add($x) } }
             continue
         }
-        $copy = @{ File = $l.File; Only = $null; Root = $null }
-        if ($l.Only) { $copy.Only = New-PsdList; foreach ($x in $l.Only) { $copy.Only.Add($x) } }
+        $copy = New-PsdLayer $l.File
+        if ($l.Only) { $copy.Only = $l.Only.GetRange(0, $l.Only.Count) }
         $seen[$l.File.Key] = $copy
         $out.Add($copy)
     }
@@ -144,35 +148,33 @@ function New-PsdDocObject {
     }
 }
 
+# Adds a name to Table (the document's Ns or Inc) as Value, unless it can't be used. Target is the file behind it.
 function Register-PsdNs {
-    param($Doc, [string] $Ns, $Target, [string] $TargetKey, $Node, $Ctx)
+    param($Doc, $Table, [string] $Ns, $Target, $Value, $Node, $Ctx)
     if ($Ns -ieq 'this') {
         if ($Node) { Add-PsdNodeError $Ctx 'PSD204' "a file can't be called 'this', because this:: always means the file it's written in." $Node -Hint @("Rename it, or give it a name with '!name'.") }
         else { Add-PsdError $Ctx 'PSD204' "a file can't be called 'this', because this:: always means the file it's written in." -File $Target -Hint @("Give it a name with '!name' = '...'") }
         return
     }
-    foreach ($table in @($Doc.Ns, $Doc.Inc)) {
-        if ($table.ContainsKey($Ns)) {
-            $old = $table[$Ns]
+    foreach ($taken in @($Doc.Ns, $Doc.Inc)) {
+        if ($taken.ContainsKey($Ns)) {
+            $old = $taken[$Ns]
             $oldKey = if ($old.ContainsKey('Entry')) { $old.Entry.Key } else { $old.Key }
-            if ($oldKey -ne $TargetKey) {
-                $msg = "two different files or maps are both called '$Ns', so $Ns:: can't tell them apart."
-                if ($Node) { Add-PsdNodeError $Ctx 'PSD203' $msg $Node -Hint @("Give one of them its own name with '!name' = '...'") }
-                else { Add-PsdError $Ctx 'PSD203' $msg -Hint @("Give one of them its own name with '!name' = '...'") }
+            if ($oldKey -ne $Target.Key) {
+                Add-PsdNodeError $Ctx 'PSD203' "two different files or maps are both called '$Ns', so $Ns:: can't tell them apart." $Node -Hint @("Give one of them its own name with '!name' = '...'")
             }
             return
         }
     }
+    $Table[$Ns] = $Value
 }
 
 function Get-PsdIncludedDoc {
     param($File, $Ctx, $Node)
     if ($Ctx.Docs.ContainsKey($File.Key)) { return $Ctx.Docs[$File.Key] }
-    foreach ($s in $Ctx.DocStack) {
-        if ($s.Key -eq $File.Key) {
-            Add-PsdNodeError $Ctx 'PSD201' 'these files include each other in a circle.' $Node -Extra @((Get-PsdChainText $Ctx.DocStack $File.Path), '') -Hint @("Remove one of the '!include' lines.")
-            return $null
-        }
+    if (Test-PsdOnStack $Ctx.DocStack $File.Key) {
+        Add-PsdNodeError $Ctx 'PSD201' 'these files include each other in a circle.' $Node -Extra @((Get-PsdChainText $Ctx.DocStack $File.Path), '') -Hint @("Remove one of the '!include' lines.")
+        return $null
     }
     $layers = Get-PsdLayers $File $Ctx
     $doc = New-PsdDoc $File $layers $Ctx
@@ -190,11 +192,11 @@ function Add-PsdMapIncludes {
             Add-PsdError $Ctx 'PSD204' "'this' can't be a name in -Include, because this:: always means the file it's written in."
             continue
         }
-        if ($name -notmatch '^[^\s"<>|?()\[\],:@!]+$') {
+        if (-not $script:PsdRxFileName.IsMatch($name)) {
             Add-PsdError $Ctx 'PSD206' "'$name' can't be a name in -Include. Names can't have spaces or signs like :, @ or !."
             continue
         }
-        if (-not ($value -is [System.Collections.IDictionary] -or $value -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $value))) {
+        if (-not (Test-PsdMapLike $value)) {
             Add-PsdError $Ctx 'PSD206' "-Include needs a map for '$name', but it's $(Get-PsdKindText $value)."
             continue
         }
@@ -202,12 +204,9 @@ function Add-PsdMapIncludes {
         $f.Label = $name
         $f.Named = $true
         $f.Root = ConvertFrom-PsdObject $value $f $Ctx ''
-        $layers = New-PsdList
-        $layers.Add(@{ File = $f; Only = $null; Root = $null })
-        $idoc = New-PsdDoc $f $layers $Ctx
+        $idoc = New-PsdDoc $f (Join-PsdList $null (New-PsdLayer $f)) $Ctx
         $Ctx.Docs[$f.Key] = $idoc
-        Register-PsdNs $Doc $name $f $f.Key $null $Ctx
-        if (-not $Doc.Ns.ContainsKey($name) -and -not $Doc.Inc.ContainsKey($name)) { $Doc.Inc[$name] = $idoc }
+        Register-PsdNs $Doc $Doc.Inc $name $f $idoc $null $Ctx
     }
 }
 
@@ -221,9 +220,7 @@ function New-PsdDoc {
     if ($Prov) { $doc.Prov = @{} }
     foreach ($l in $Layers) {
         $f = $l.File
-        if ($f.Synthetic -and -not $f.Named) { continue }
-        Register-PsdNs $doc $f.Ns $f $f.Key $null $Ctx
-        if (-not $doc.Ns.ContainsKey($f.Ns) -and -not $doc.Inc.ContainsKey($f.Ns) -and $f.Ns -ine 'this') { $doc.Ns[$f.Ns] = $f }
+        if (-not $f.Synthetic -or $f.Named) { Register-PsdNs $doc $doc.Ns $f.Ns $f $f $null $Ctx }
     }
     foreach ($l in $Layers) {
         foreach ($inc in $l.File.Include) {
@@ -231,9 +228,7 @@ function New-PsdDoc {
                 $f = Read-PsdFile $p $Ctx $inc.Node 'PSD200'
                 if ($null -eq $f -or $null -eq $f.Root) { continue }
                 $idoc = Get-PsdIncludedDoc $f $Ctx $inc.Node
-                if ($null -eq $idoc) { continue }
-                Register-PsdNs $doc $f.Ns $f $f.Key $inc.Node $Ctx
-                if (-not $doc.Ns.ContainsKey($f.Ns) -and -not $doc.Inc.ContainsKey($f.Ns) -and $f.Ns -ine 'this') { $doc.Inc[$f.Ns] = $idoc }
+                if ($null -ne $idoc) { Register-PsdNs $doc $doc.Inc $f.Ns $f $idoc $inc.Node $Ctx }
             }
         }
     }
@@ -266,14 +261,12 @@ function Get-PsdLayerRoot {
 
 function Select-PsdKeys {
     param($Root, $Keys)
-    $test = { param($k) foreach ($x in $Keys) { if ($x -ieq $k) { return $true } }; $false }
     $n = New-PsdMapNode $Root.File $null $Root.Path
     Copy-PsdLocation $Root $n
-    foreach ($k in $Root.V.PSBase.Keys) { if (& $test $k) { $n.V[$k] = $Root.V[$k] } }
-    foreach ($op in $Root.Ops) { if (& $test $op.Key) { $n.Ops.Add($op) } }
+    foreach ($k in $Root.V.PSBase.Keys) { if ($Keys -icontains $k) { $n.V[$k] = $Root.V[$k] } }
+    foreach ($op in $Root.Ops) { if ($Keys -icontains $op.Key) { $n.Ops.Add($op) } }
     foreach ($if in $Root.Ifs) {
-        $copy = @{}
-        foreach ($k in $if.PSBase.Keys) { $copy[$k] = $if[$k] }
+        $copy = $if.Clone()
         $copy.Body = Select-PsdKeys $if.Body $Keys
         $n.Ifs.Add($copy)
     }
@@ -328,7 +321,7 @@ function New-PsdFileDoc {
         }
         $of = New-PsdSyntheticFile 'override' $Entry.Dir
         $of.Root = ConvertFrom-PsdObject $Override $of $Ctx ''
-        $layers.Add(@{ File = $of; Only = $null; Root = $null })
+        $layers.Add((New-PsdLayer $of))
     }
     New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent $Include $Rules $Defaults
 }

@@ -3,10 +3,6 @@
 
 Set-StrictMode -Version Latest
 
-foreach ($folder in @('Private', 'Public')) {
-    $folderPath = Join-Path -Path $PSScriptRoot -ChildPath $folder
-    if (-not (Test-Path -LiteralPath $folderPath)) { continue }
-    foreach ($file in @(Get-ChildItem -LiteralPath $folderPath -Filter '*.ps1' -Recurse | Sort-Object -Property FullName)) {
-        . $file.FullName
-    }
+foreach ($file in Get-ChildItem -LiteralPath "$PSScriptRoot/Private", "$PSScriptRoot/Public" -Filter '*.ps1' -Recurse) {
+    . $file.FullName
 }

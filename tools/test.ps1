@@ -3,7 +3,7 @@
     Runs the Pester tests. Use ./build.ps1 -Test, which starts this in a process without a profile.
 
 .PARAMETER Name
-    Tests to run: a test name (Get-Greeting, wildcards allowed) or a path to a test file or folder.
+    Tests to run: a test name (Import-Psd, wildcards allowed) or a path to a test file or folder.
     Without it, everything in tests/ runs.
 #>
 [CmdletBinding()]
@@ -40,5 +40,7 @@ $configuration.Run.Path = $paths
 $configuration.Run.PassThru = $true
 $configuration.Output.Verbosity = 'Detailed'
 
+# Tests capture errors with 2>&1, which 'Stop' would turn into exceptions.
+$ErrorActionPreference = 'Continue'
 $result = Invoke-Pester -Configuration $configuration
 if ($result.Result -ne 'Passed') { throw "$($result.FailedCount) test(s) failed." }

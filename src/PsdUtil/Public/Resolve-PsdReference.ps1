@@ -28,9 +28,8 @@ function Resolve-PsdReference {
     $segs = ConvertFrom-PsdPathText $Key
     $node = $doc.Tree
     foreach ($s in $segs) {
-        if ($node.K -eq 'M' -and -not $s.IsIndex -and $node.V.Contains($s.Key)) { $node = $node.V[$s.Key] }
-        elseif ($node.K -eq 'L' -and $s.IsIndex -and $s.Index -lt $node.V.Count) { $node = $node.V[$s.Index] }
-        else {
+        $node = Get-PsdTreeChild $node $s
+        if ($null -eq $node) {
             Add-PsdError $ctx 'PSD301' "'$Key' doesn't exist in $([IO.Path]::GetFileName($Path))."
             Write-PsdResult $PSCmdlet $ctx $null
             return

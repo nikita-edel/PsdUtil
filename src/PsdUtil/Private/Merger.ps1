@@ -17,9 +17,7 @@ function Merge-PsdMap {
         $prev = $null
         if ($out.V.Contains($k)) { $prev = $out.V[$k] }
         $childRule = Get-PsdChildRule $Rule $k
-        $childKeys = New-PsdList
-        foreach ($x in $Keys) { $childKeys.Add($x) }
-        $childKeys.Add([string]$k)
+        $childKeys = Join-PsdList $Keys ([string]$k)
         # a key without an operator gets the default one of -Merge or the schema, if it fits the value
         if ($null -ne $prev) {
             $op = Get-PsdDefaultOp $M $childKeys $childRule
@@ -50,9 +48,7 @@ function Merge-PsdMap {
 function Get-PsdChildRule {
     param($Rule, [string] $Key)
     if ($null -eq $Rule) { return $null }
-    if ($Rule.Properties) {
-        foreach ($k in $Rule.Properties.PSBase.Keys) { if ($k -ieq $Key) { return $Rule.Properties[$k] } }
-    }
+    if ($Rule.Properties -and $Rule.Properties.Contains($Key)) { return $Rule.Properties[$Key] }
     $Rule.Items
 }
 
@@ -75,15 +71,10 @@ function Test-PsdMergePattern {
 # schema rule, else $null.
 function Get-PsdDefaultOp {
     param($M, $Keys, $Rule)
-    # a generic list, @() on it fails
-    $defaults = $M['Defaults']
-    if ($null -ne $defaults) {
-        foreach ($d in $defaults) {
-            if (Test-PsdMergePattern $d.Pattern 0 $Keys 0) { return $d.Op }
-        }
+    foreach ($d in $M.Defaults) {
+        if (Test-PsdMergePattern $d.Pattern 0 $Keys 0) { return $d.Op }
     }
-    if ($null -ne $Rule -and $Rule['Merge']) { return $Rule['Merge'] }
-    $null
+    if ($null -ne $Rule) { $Rule['Merge'] }
 }
 
 # Turns the -Merge map (key path pattern -> operator) into a list of @{ Pattern = keys; Op }, in the given order.
@@ -194,12 +185,10 @@ function Invoke-PsdMergeOp {
                 return
             }
             if ($prev.K -eq 'M') {
-                $names = Get-PsdItems $arg
-                if ($arg.K -eq 'L') { $names = Get-PsdItems $arg.V }
                 $copy = New-PsdMapNode $prev.File $null $prev.Path
                 Copy-PsdLocation $prev $copy
                 foreach ($x in $prev.V.PSBase.Keys) { $copy.V[$x] = $prev.V[$x] }
-                foreach ($n in $names) {
+                foreach ($n in (Get-PsdNodeItems $arg)) {
                     if ($n.K -ne 'S' -or $n.V -isnot [string]) {
                         Add-PsdMergeError $M 'PSD211' "removing from the map $shown needs key names." $Op
                         continue

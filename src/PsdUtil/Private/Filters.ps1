@@ -1,14 +1,10 @@
 # The fixed list of filters. None of them can loop.
 
-$script:PsdFilterArgs = [ordered]@{
-    lower = 0; upper = 0; trim = 0; replace = 2; split = 1
-    join = 1; first = 0; last = 0; sort = 0; unique = 0; count = 0
-    keys = 0; values = 0
-}
-$script:PsdFilterKinds = @{
-    lower = 'text'; upper = 'text'; trim = 'text'; replace = 'text'; split = 'text'
-    join = 'list'; first = 'list'; last = 'list'; sort = 'list'; unique = 'list'; count = 'list'
-    keys = 'map'; values = 'map'
+# name = number of arguments, kind of value it works on
+$script:PsdFilters = [ordered]@{
+    lower = 0, 'text'; upper = 0, 'text'; trim = 0, 'text'; replace = 2, 'text'; split = 1, 'text'
+    join = 1, 'list'; first = 0, 'list'; last = 0, 'list'; sort = 0, 'list'; unique = 0, 'list'; count = 0, 'list'
+    keys = 0, 'map'; values = 0, 'map'
 }
 
 function Compare-PsdScalar {
@@ -26,18 +22,17 @@ function Invoke-PsdFilter {
         Add-PsdNodeError $ctx $code $msg $Ev.Node $Filter.Start ($Filter.End - $Filter.Start) -Hint $hint
         $null
     }
-    if (-not $script:PsdFilterArgs.Contains($name)) {
-        $all = @($script:PsdFilterArgs.PSBase.Keys) -join ', '
-        $dym = Get-PsdDidYouMean $Filter.Name $script:PsdFilterArgs.PSBase.Keys
+    if (-not $script:PsdFilters.Contains($name)) {
+        $all = @($script:PsdFilters.PSBase.Keys) -join ', '
+        $dym = Get-PsdDidYouMean $Filter.Name $script:PsdFilters.PSBase.Keys
         return (& $err 'PSD311' "'$($Filter.Name)' isn't a filter." @($dym, "Filters: $all."))
     }
-    $want = $script:PsdFilterArgs[$name]
+    $want, $kind = $script:PsdFilters[$name]
     if ($FArgs.Count -ne $want) {
         $n = if ($want -eq 1) { '1 argument' } else { "$want arguments" }
         return (& $err 'PSD312' "'$name' takes $n, but got $($FArgs.Count).")
     }
     if ($null -eq $Value) { return $null }
-    $kind = $script:PsdFilterKinds[$name]
     $okKind = switch ($kind) {
         'text' { $Value -is [string] }
         'list' { Test-PsdList $Value }
@@ -51,6 +46,11 @@ function Invoke-PsdFilter {
     foreach ($a in $FArgs) {
         if (Test-PsdContainer $a) { return (& $err 'PSD312' "the arguments of '$name' have to be text or numbers.") }
         $textArgs.Add((Format-PsdScalarText $a))
+    }
+    if ($name -in 'join', 'sort') {
+        foreach ($x in $Value) {
+            if (Test-PsdContainer $x) { return (& $err 'PSD312' "'$name' needs a list of text or numbers, but an item is $(Get-PsdKindText $x).") }
+        }
     }
 
     switch ($name) {
@@ -68,22 +68,14 @@ function Invoke-PsdFilter {
             return , $out
         }
         'join' {
-            $parts = New-PsdList
-            foreach ($x in $Value) {
-                if (Test-PsdContainer $x) { return (& $err 'PSD312' "'join' needs a list of text or numbers, but an item is $(Get-PsdKindText $x).") }
-                $parts.Add((Format-PsdScalarText $x))
-            }
+            $parts = foreach ($x in $Value) { Format-PsdScalarText $x }
             return ($parts -join $textArgs[0])
         }
         'first' { if ($Value.Count -eq 0) { return $null }; return , $Value[0] }
         'last' { if ($Value.Count -eq 0) { return $null }; return , $Value[$Value.Count - 1] }
         'count' { if ($Value -is [System.Collections.IDictionary]) { return $Value.PSBase.Count }; return $Value.Count }
         'sort' {
-            $out = New-PsdList
-            foreach ($x in $Value) {
-                if (Test-PsdContainer $x) { return (& $err 'PSD312' "'sort' needs a list of text or numbers, but an item is $(Get-PsdKindText $x).") }
-                $out.Add($x)
-            }
+            $out = Get-PsdItems $Value
             # Insertion sort keeps equal items in order.
             for ($i = 1; $i -lt $out.Count; $i++) {
                 $x = $out[$i]
@@ -95,11 +87,7 @@ function Invoke-PsdFilter {
         }
         'unique' {
             $out = New-PsdList
-            foreach ($x in $Value) {
-                $there = $false
-                foreach ($y in $out) { if (Test-PsdEqual $x $y) { $there = $true; break } }
-                if (-not $there) { $out.Add($x) }
-            }
+            foreach ($x in $Value) { if (-not (Test-PsdListHas $out $x)) { $out.Add($x) } }
             return , $out
         }
         'keys' { $out = New-PsdList; foreach ($k in $Value.PSBase.Keys) { $out.Add($k) }; return , $out }

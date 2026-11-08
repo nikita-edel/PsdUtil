@@ -48,6 +48,9 @@ BeforeDiscovery {
         @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ A = 1; B = '!<A' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ A = 1; B = '!<>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ A = 1; B = '!<!<A>>' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ L = @(1); B = '!<L[99999999999]>' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ B = '!<99999999999999999999>' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD301'; Files = @{ 'main.psd1' = '@{ L = @(1) }' }; Run = { Resolve-PsdReference ./main.psd1 'L[-5]' } }
         @{ Code = 'PSD301'; Files = @{ 'main.psd1' = "@{ Port = 1; B = '!<Prot>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD301'; Files = @{ 'main.psd1' = "@{ S = `$null; B = '!<S.Port>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD108'; Files = @{ 'main.psd1' = "@{ '!merge' = './s.ps1' }"; 's.ps1' = '@{ A = 1 }' }; Run = { Import-Psd ./main.psd1 } }
@@ -69,6 +72,7 @@ BeforeDiscovery {
         # Conditions
         @{ Code = 'PSD400'; Files = @{ 'main.psd1' = "@{ A = 1; '!if !<A> -eq' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$true; '!if !<A>' = @{ B = 1 }; '!if !<B>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$true; '!if !<A>' = @{ L = @(1) }; '!if !<L[0]>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD402'; Files = @{ 'main.psd1' = "@{ M = @{ A = 1 }; '!if !<M> -gt 1' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD403'; Files = @{ 'main.psd1' = "@{ A = 'x'; '!if !<A> -match ""(""' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
 
@@ -98,6 +102,7 @@ BeforeDiscovery {
         @{ Code = 'PSD604'; Files = @{}; Run = { ConvertTo-Psd @{ A = 1 } -Format @{ Indnet = 2 } } }
         @{ Code = 'PSD605'; Files = @{}; Run = { Export-Psd @{ A = 1 } -Path ./no/such/folder/out.psd1 } }
         @{ Code = 'PSD606'; Files = @{ 'main.psd1' = '@{ A = ' }; Run = { Update-Psd ./main.psd1 -Key A -Value 1 } }
+        @{ Code = 'PSD606'; Files = @{ 'main.psd1' = [byte[]](0x40, 0x7B, 0x61, 0x3D, 0x27, 0xC3, 0x28, 0x27, 0x7D) }; Run = { Format-Psd ./main.psd1 } }
         @{ Code = 'PSD607'; Files = @{ 'main.psd1' = "@{ A = 'x' }" }; Run = { Update-Psd ./main.psd1 -Key 'A.B' -Value 1 } }
 
         # Limits

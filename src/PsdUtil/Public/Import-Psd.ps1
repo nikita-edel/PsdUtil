@@ -29,6 +29,7 @@ function Import-Psd {
     block that gets the full path and returns the map, for example { param($Path) & $Path }. PsdUtil
     itself runs no code; without -Loader a .ps1 is error PSD108. What the loader returns is the file:
     '!merge', '!include', '!name' and '!schema' work in it, with paths relative to its folder.
+
     .PARAMETER Merge
     Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
     adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any

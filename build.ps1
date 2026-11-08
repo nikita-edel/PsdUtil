@@ -31,8 +31,8 @@
     Runs all tests.
 
 .EXAMPLE
-    ./build.ps1 -Test Get-Greeting tests/Private
-    Runs tests/Public/Get-Greeting.Tests.ps1 and everything in tests/Private.
+    ./build.ps1 -Test Import-Psd tests/Errors.Tests.ps1
+    Runs tests/Public/Import-Psd.Tests.ps1 and tests/Errors.Tests.ps1.
 
 .EXAMPLE
     ./build.ps1 -Install

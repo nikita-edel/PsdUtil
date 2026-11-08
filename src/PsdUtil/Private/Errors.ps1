@@ -17,8 +17,7 @@ function New-PsdContext {
         [System.Collections.IDictionary] $Limits,
         [string] $Unresolved = 'Error'
     )
-    $l = [ordered]@{}
-    foreach ($k in $script:PsdDefaultLimits.PSBase.Keys) { $l[$k] = $script:PsdDefaultLimits[$k] }
+    $l = Copy-PsdPlain $script:PsdDefaultLimits
     if ($Limits) {
         foreach ($k in $Limits.PSBase.Keys) {
             $name = [string]$k
@@ -34,17 +33,17 @@ function New-PsdContext {
         }
     }
     @{
-        Errors     = New-Object 'System.Collections.Generic.List[object]'
-        Warnings   = New-Object 'System.Collections.Generic.List[string]'
+        Errors     = New-PsdList
+        Warnings   = New-PsdList
         # where a value came from when it could have come from more than one place; written with -Verbose
-        Notes      = New-Object 'System.Collections.Generic.List[string]'
+        Notes      = New-PsdList
         NoteSeen   = @{}
         # -Loader: reads files that aren't .psd1, like .ps1 scripts; PsdUtil itself runs no code
         Loader     = $null
         Limits     = $l
         Files      = @{}
         Docs       = @{}
-        DocStack   = New-Object 'System.Collections.Generic.List[object]'
+        DocStack   = New-PsdList
         Unresolved = $Unresolved
         Nodes      = 0
         SchemaMode = $false
@@ -91,10 +90,10 @@ function Add-PsdError {
 }
 
 function Add-PsdLimitError {
-    param($Ctx, [string] $Limit, [string] $Where, $File = $null, [int] $Line = 0, [int] $Column = 0)
+    param($Ctx, [string] $Limit, [string] $Where, $Node = $null)
     $Ctx.LimitHit = $true
-    $value = $Ctx.Limits[$Limit]
-    Add-PsdError $Ctx 'PSD700' "the limit $Limit ($value) was reached $Where." -File $File -Line $Line -Column $Column `
+    $loc = Get-PsdNodeLoc $Node
+    Add-PsdError $Ctx 'PSD700' "the limit $Limit ($($Ctx.Limits[$Limit])) was reached $Where." -File $loc.File -Line $loc.Line -Column $loc.Col `
         -Hint @("If this is on purpose, raise it: -Limits @{ $Limit = ... }")
 }
 
@@ -140,26 +139,20 @@ function Format-PsdErrorText {
 
 function ConvertTo-PsdErrorObject {
     param($Info)
-    $path = $null
-    if ($Info.File) { $path = $Info.File.Path }
-    $text = Format-PsdErrorText $Info
-    $o = [pscustomobject]@{
+    [pscustomobject]@{
         PSTypeName = 'PsdUtil.Error'
         Code       = $Info.Code
-        File       = $path
+        File       = $(if ($Info.File) { $Info.File.Path })
         Line       = $Info.Line
         Column     = $Info.Column
         Key        = $Info.Key
-        Message    = $text
-    }
-    $o | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Message } -Force
-    $o
+        Message    = Format-PsdErrorText $Info
+    } | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Message } -Force -PassThru
 }
 
 function New-PsdErrorRecord {
     param($Info)
-    $text = Format-PsdErrorText $Info
-    $ex = New-Object System.Exception $text
+    $ex = New-Object System.Exception (Format-PsdErrorText $Info)
     New-Object System.Management.Automation.ErrorRecord $ex, $Info.Code, ([System.Management.Automation.ErrorCategory]::InvalidData), (ConvertTo-PsdErrorObject $Info)
 }
 
@@ -203,7 +196,7 @@ function Get-PsdDistance {
     $d[$n * $w + $m]
 }
 
-function Get-PsdSuggestion {
+function Get-PsdDidYouMean {
     param([string] $Word, $Candidates)
     $best = $null; $bestD = [int]::MaxValue
     $limit = [Math]::Max(2, [int][Math]::Floor($Word.Length / 3))
@@ -213,15 +206,7 @@ function Get-PsdSuggestion {
         $dist = Get-PsdDistance $Word $s
         if ($dist -lt $bestD) { $bestD = $dist; $best = $s }
     }
-    if ($null -ne $best -and $bestD -le $limit) { return $best }
-    $null
-}
-
-function Get-PsdDidYouMean {
-    param([string] $Word, $Candidates)
-    $s = Get-PsdSuggestion $Word $Candidates
-    if ($s) { return "Did you mean '$s'?" }
-    $null
+    if ($best -and $bestD -le $limit) { "Did you mean '$best'?" }
 }
 
 # --- Values -------------------------------------------------------------------
@@ -258,7 +243,6 @@ function Format-PsdScalarText {
     param($Value)
     if ($null -eq $Value) { return '' }
     if ($Value -is [string]) { return $Value }
-    if ($Value -is [bool]) { if ($Value) { return 'True' } return 'False' }
     if ($Value -is [double]) { return $Value.ToString('R', $script:PsdInvariant) }
     if ($Value -is [System.IFormattable]) { return $Value.ToString($null, $script:PsdInvariant) }
     [string]$Value
@@ -273,31 +257,51 @@ function Format-PsdValueShort {
     Get-PsdKindText $Value
 }
 
-# Equality for list operators, unique, -in and Enum. Text ignores case.
+# Equality for list operators, unique, -in, Enum and Compare-Psd. Text ignores case unless told otherwise.
 function Test-PsdEqual {
-    param($A, $B)
+    param($A, $B, [System.StringComparison] $Text = 'OrdinalIgnoreCase')
     if ($null -eq $A -or $null -eq $B) { return ($null -eq $A -and $null -eq $B) }
     if ($A -is [System.Collections.IDictionary]) {
         if ($B -isnot [System.Collections.IDictionary] -or $A.PSBase.Count -ne $B.PSBase.Count) { return $false }
         foreach ($k in $A.PSBase.Keys) {
-            if (-not $B.Contains($k)) { return $false }
-            if (-not (Test-PsdEqual $A[$k] $B[$k])) { return $false }
+            if (-not $B.Contains($k) -or -not (Test-PsdEqual $A[$k] $B[$k] $Text)) { return $false }
         }
         return $true
     }
     if (Test-PsdList $A) {
         if (-not (Test-PsdList $B) -or $A.Count -ne $B.Count) { return $false }
-        for ($i = 0; $i -lt $A.Count; $i++) { if (-not (Test-PsdEqual $A[$i] $B[$i])) { return $false } }
+        for ($i = 0; $i -lt $A.Count; $i++) { if (-not (Test-PsdEqual $A[$i] $B[$i] $Text)) { return $false } }
         return $true
     }
-    if ($A -is [string] -and $B -is [string]) { return [string]::Equals($A, $B, [System.StringComparison]::OrdinalIgnoreCase) }
+    if ($A -is [string] -and $B -is [string]) { return [string]::Equals($A, $B, $Text) }
     if ((Test-PsdNumber $A) -and (Test-PsdNumber $B)) { return ([double]$A -eq [double]$B) }
     if ($A.GetType() -ne $B.GetType()) { return $false }
     $A.Equals($B)
 }
 
+function Test-PsdListHas {
+    param($List, $Item)
+    foreach ($x in $List) { if (Test-PsdEqual $x $Item) { return $true } }
+    $false
+}
+
 function New-PsdList {
     New-Object 'System.Collections.Generic.List[object]'
+}
+
+# A new list: the items of List ($null is fine), then Item.
+function Join-PsdList {
+    param($List, $Item)
+    $out = New-PsdList
+    foreach ($x in $List) { $out.Add($x) }
+    $out.Add($Item)
+    , $out
+}
+
+# What can stand for a whole file or map: a map, a PSCustomObject or a generated class made from a map.
+function Test-PsdMapLike {
+    param($Value)
+    $Value -is [System.Collections.IDictionary] -or $Value -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $Value)
 }
 
 function New-PsdRegex {

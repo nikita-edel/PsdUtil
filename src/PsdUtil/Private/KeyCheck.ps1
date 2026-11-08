@@ -10,8 +10,7 @@ function Get-PsdKeyReport {
         $segs = ConvertFrom-PsdPathText $k
         $r = Find-PsdObjectPath $Object $segs $CaseSensitive
         if ($r.Found) { $found.Add($k) } else { $missing.Add($k) }
-        $parent = New-PsdList
-        for ($i = 0; $i -lt $segs.Count - 1; $i++) { $parent.Add($segs[$i]) }
+        $parent = $segs.GetRange(0, $segs.Count - 1)
         $pk = Format-PsdSegs $parent
         if (-not $byParent.Contains($pk)) { $byParent[$pk] = @{ Segs = $parent; Children = (New-PsdList) } }
         $last = $segs[$segs.Count - 1]
@@ -27,10 +26,7 @@ function Get-PsdKeyReport {
             elseif ($kind -eq 'object') { foreach ($x in $p.Value.PSObject.Properties) { $names.Add($x.Name) } }
             foreach ($n in $names) {
                 $listed = $false
-                foreach ($c in $byParent[$pk].Children) {
-                    if ($CaseSensitive) { if ([string]::Equals($c, $n, [System.StringComparison]::Ordinal)) { $listed = $true } }
-                    elseif ($c -ieq $n) { $listed = $true }
-                }
+                foreach ($c in $byParent[$pk].Children) { if (Test-PsdKeySame $c $n $CaseSensitive) { $listed = $true } }
                 if (-not $listed) { $extra.Add((Join-PsdPath $pk $n)) }
             }
         }

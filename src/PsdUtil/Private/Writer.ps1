@@ -9,38 +9,32 @@ $script:PsdFormatDefaults = [ordered]@{
     LineEnding     = 'Auto'
     Bom            = $false
 }
-$script:PsdRxBareKey = New-Object regex '^[A-Za-z_][A-Za-z0-9_]*$'
+# What has to be escaped in each kind of quote. PowerShell also reads typographic quotes as quotes.
+$script:PsdRxEscDouble = New-Object regex ('[`$"' + [char]0x201C + '-' + [char]0x201E + ']')
+$script:PsdRxEscSingle = New-Object regex ("['" + [char]0x2018 + '-' + [char]0x201B + ']')
 
 function Get-PsdFormat {
     param([System.Collections.IDictionary] $Format, $Ctx)
-    $f = [ordered]@{}
-    foreach ($k in $script:PsdFormatDefaults.PSBase.Keys) { $f[$k] = $script:PsdFormatDefaults[$k] }
+    $f = Copy-PsdPlain $script:PsdFormatDefaults
     if ($null -eq $Format) { return $f }
+    $options = @($f.PSBase.Keys)
     foreach ($k in $Format.PSBase.Keys) {
         $name = [string]$k
         $v = $Format[$k]
-        $known = $null
-        foreach ($x in $script:PsdFormatDefaults.PSBase.Keys) { if ($x -ieq $name) { $known = $x } }
-        if (-not $known) {
-            Add-PsdError $Ctx 'PSD604' "'$name' isn't a format option." -Hint @((Get-PsdDidYouMean $name $script:PsdFormatDefaults.PSBase.Keys), "Options: $(@($script:PsdFormatDefaults.PSBase.Keys) -join ', ').")
+        $known = @($options -ieq $name)
+        if ($known.Count -eq 0) {
+            Add-PsdError $Ctx 'PSD604' "'$name' isn't a format option." -Hint @((Get-PsdDidYouMean $name $options), "Options: $($options -join ', ').")
             continue
         }
-        $ok = switch ($known) {
-            'Indent' { (Test-PsdNumber $v) -and $v -ge 0 -and $v -le 16 }
-            'InlineArrayMax' { (Test-PsdNumber $v) -and $v -ge 0 }
-            'Quote' { $v -in 'Single', 'Double' }
-            'LineEnding' { $v -in 'Auto', 'LF', 'CRLF' }
-            default { $v -is [bool] }
+        $want, $ok = switch ($known[0]) {
+            'Indent' { 'a number from 0 to 16'; (Test-PsdNumber $v) -and $v -ge 0 -and $v -le 16 }
+            'InlineArrayMax' { 'a number of 0 or more'; (Test-PsdNumber $v) -and $v -ge 0 }
+            'Quote' { "'Single' or 'Double'"; $v -in 'Single', 'Double' }
+            'LineEnding' { "'Auto', 'LF' or 'CRLF'"; $v -in 'Auto', 'LF', 'CRLF' }
+            default { '$true or $false'; $v -is [bool] }
         }
-        if (-not $ok) {
-            $want = switch ($known) {
-                'Indent' { 'a number from 0 to 16' } 'InlineArrayMax' { 'a number of 0 or more' }
-                'Quote' { "'Single' or 'Double'" } 'LineEnding' { "'Auto', 'LF' or 'CRLF'" } default { '$true or $false' }
-            }
-            Add-PsdError $Ctx 'PSD604' "the format option $known has to be $want, but it's $(Format-PsdValueShort $v)."
-            continue
-        }
-        $f[$known] = $v
+        if ($ok) { $f[$known[0]] = $v }
+        else { Add-PsdError $Ctx 'PSD604' "the format option $($known[0]) has to be $want, but it's $(Format-PsdValueShort $v)." }
     }
     $f
 }
@@ -55,26 +49,8 @@ function Format-PsdString {
     param([string] $Value, $Format, [bool] $Raw = $false)
     $v = $Value
     if (-not $Raw) { $v = $Value.Replace('!<', '!!<') }
-    if ($Format.Quote -eq 'Double') {
-        $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('"')
-        foreach ($c in $v.ToCharArray()) {
-            $code = [int]$c
-            if ($c -eq '`' -or $c -eq '$' -or $c -eq '"' -or ($code -ge 0x201C -and $code -le 0x201E)) { [void]$sb.Append('`') }
-            [void]$sb.Append($c)
-        }
-        [void]$sb.Append('"')
-        return $sb.ToString()
-    }
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append("'")
-    foreach ($c in $v.ToCharArray()) {
-        $code = [int]$c
-        if ($c -eq "'" -or ($code -ge 0x2018 -and $code -le 0x201B)) { [void]$sb.Append($c) }
-        [void]$sb.Append($c)
-    }
-    [void]$sb.Append("'")
-    $sb.ToString()
+    if ($Format.Quote -eq 'Double') { return '"' + $script:PsdRxEscDouble.Replace($v, '`$0') + '"' }
+    "'" + $script:PsdRxEscSingle.Replace($v, '$0$0') + "'"
 }
 
 function Format-PsdKeyOut {
@@ -98,7 +74,7 @@ function Format-PsdKeyOut {
         }
         if ($k.StartsWith('!')) { $k = '!' + $k }
     }
-    if ($script:PsdRxBareKey.IsMatch($k)) { return $k }
+    if ($script:PsdRxIdent.IsMatch($k)) { return $k }
     Format-PsdString $k @{ Quote = 'Single' } $raw
 }
 
@@ -133,8 +109,7 @@ function Format-PsdScalarOut {
     }
     if (Test-PsdNumber $Value) { return $Value.ToString($null, $script:PsdInvariant) }
     if ($Value -is [enum]) { return (Format-PsdString $Value.ToString() $S.Format) }
-    if ($Value -is [datetime]) { return (Format-PsdString $Value.ToString('o', $script:PsdInvariant) $S.Format) }
-    if ($Value -is [datetimeoffset]) { return (Format-PsdString $Value.ToString('o', $script:PsdInvariant) $S.Format) }
+    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) { return (Format-PsdString $Value.ToString('o', $script:PsdInvariant) $S.Format) }
     if ($Value -is [timespan]) { return (Format-PsdString $Value.ToString('c', $script:PsdInvariant) $S.Format) }
     Format-PsdString $Value.ToString() $S.Format
 }
@@ -145,6 +120,13 @@ function Test-PsdSeen {
     $false
 }
 
+function Get-PsdMapPairs {
+    param($Map)
+    $pairs = New-PsdList
+    foreach ($k in $Map.PSBase.Keys) { $pairs.Add(([object[]]($k, $Map[$k]))) }
+    , $pairs
+}
+
 # Turns any object into its parts: @{ Kind = 'map'|'list'|'scalar'; Pairs; Items; Value }.
 function Split-PsdObject {
     param($Value, $S)
@@ -153,22 +135,14 @@ function Split-PsdObject {
         Add-PsdError $S.Ctx 'PSD602' "$($S.Path) is a $($Value.GetType().Name), which a data file can't hold."
         return @{ Kind = 'scalar'; Value = $null }
     }
-    if ($Value -is [System.Collections.IDictionary]) {
-        $pairs = New-PsdList
-        foreach ($k in $Value.PSBase.Keys) { $pairs.Add(([object[]]($k, $Value[$k]))) }
-        return @{ Kind = 'map'; Pairs = $pairs }
-    }
+    if ($Value -is [System.Collections.IDictionary]) { return @{ Kind = 'map'; Pairs = (Get-PsdMapPairs $Value) } }
     if ($Value -is [System.Collections.IEnumerable]) {
         $items = New-PsdList
         foreach ($x in $Value) { $items.Add($x) }
         return @{ Kind = 'list'; Items = $items }
     }
     $kept = Get-PsdKeptMap $Value
-    if ($null -ne $kept) {
-        $pairs = New-PsdList
-        foreach ($k in $kept.PSBase.Keys) { $pairs.Add(([object[]]($k, $kept[$k]))) }
-        return @{ Kind = 'map'; Pairs = $pairs; Raw = $true }
-    }
+    if ($null -ne $kept) { return @{ Kind = 'map'; Pairs = (Get-PsdMapPairs $kept); Raw = $true } }
     $base = $Value
     if ($Value -is [psobject]) { $base = $Value.PSObject.BaseObject }
     $isCustom = $Value -is [System.Management.Automation.PSCustomObject]

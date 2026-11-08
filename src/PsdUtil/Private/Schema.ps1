@@ -46,8 +46,7 @@ function Read-PsdEnumFile {
 function Import-PsdSchemaRules {
     param([string] $Path, $Ctx, $From)
     if (-not [IO.File]::Exists($Path)) {
-        $msg = "the schema file $Path doesn't exist."
-        if ($From) { Add-PsdNodeError $Ctx 'PSD511' $msg $From } else { Add-PsdError $Ctx 'PSD511' $msg }
+        Add-PsdNodeError $Ctx 'PSD511' "the schema file $Path doesn't exist." $From
         return $null
     }
     $sctx = New-PsdContext -Limits $Ctx.Limits
@@ -107,10 +106,10 @@ function ConvertFrom-PsdTypeText {
             $spec.Kind = 'enum'; $spec.Name = $e.Name; $spec.Members = $e.Members; $spec.Source = $e.Source; $spec.Def = $e.Text
             return $spec
         }
-        switch -Regex ($n) {
-            '^(system\.)?version$' { $spec.Kind = 'conv'; $spec.Name = 'version'; return $spec }
-            '^(system\.)?guid$' { $spec.Kind = 'conv'; $spec.Name = 'guid'; return $spec }
-            '^(system\.)?datetime$' { $spec.Kind = 'conv'; $spec.Name = 'datetime'; return $spec }
+        if ($n -match '^(system\.)?(version|guid|datetime)$') {
+            $spec.Kind = 'conv'
+            $spec.Name = $Matches[2].ToLowerInvariant()
+            return $spec
         }
         $type = $n -as [type]
         if ($type -and $type.IsEnum) {
@@ -143,32 +142,27 @@ function New-PsdRule {
         Add-PsdSchemaError $S 'PSD500' "the rule for $($rule.Name) has to be a type like 'int', or a map like @{ Type = 'int' }." $Keys
         return $rule
     }
+    $sub = { param($name) Join-PsdList $Keys $name }
     foreach ($k in $Value.PSBase.Keys) {
-        $hit = $null
-        foreach ($kw in $script:PsdKeywords) { if ($kw -ieq $k) { $hit = $kw } }
-        if (-not $hit) {
-            $kk = New-PsdList; foreach ($x in $Keys) { $kk.Add($x) }; $kk.Add($k)
-            Add-PsdSchemaError $S 'PSD500' "'$k' isn't a schema keyword (in $($rule.Name))." $kk @((Get-PsdDidYouMean $k $script:PsdKeywords), "Keywords: $($script:PsdKeywords -join ', ').")
+        if ($script:PsdKeywords -inotcontains $k) {
+            Add-PsdSchemaError $S 'PSD500' "'$k' isn't a schema keyword (in $($rule.Name))." (& $sub $k) @((Get-PsdDidYouMean $k $script:PsdKeywords), "Keywords: $($script:PsdKeywords -join ', ').")
         }
     }
-    $sub = { param($name) $kk = New-PsdList; foreach ($x in $Keys) { $kk.Add($x) }; $kk.Add($name); , $kk }
 
     if ($Value.Contains('Type')) {
-        $tv = $Value['Type']
-        $texts = @($tv)
-        foreach ($x in $texts) {
+        foreach ($x in @($Value['Type'])) {
             if ($x -isnot [string]) { Add-PsdSchemaError $S 'PSD500' "Type in $($rule.Name) has to be a type name or a list of them." (& $sub 'Type'); continue }
             $spec = ConvertFrom-PsdTypeText $x $S (& $sub 'Type')
             if ($spec) { $rule.Types.Add($spec) }
         }
     }
-    elseif ($IsRoot) { $rule.Types.Add(@{ Name = 'map'; List = $false; Kind = 'base'; Members = $null; Source = $null; Def = $null; DotNet = $null; Text = 'map' }) }
+    elseif ($IsRoot) { $rule.Types.Add((ConvertFrom-PsdTypeText 'map' $S $Keys)) }
 
-    foreach ($pair in @(@('Required', 'bool'), @('AllowUnknown', 'bool'))) {
-        if ($Value.Contains($pair[0])) {
-            $x = $Value[$pair[0]]
-            if ($x -isnot [bool]) { Add-PsdSchemaError $S 'PSD500' "$($pair[0]) in $($rule.Name) has to be `$true or `$false." (& $sub $pair[0]) }
-            else { $rule[$pair[0]] = $x }
+    foreach ($flag in 'Required', 'AllowUnknown') {
+        if ($Value.Contains($flag)) {
+            $x = $Value[$flag]
+            if ($x -isnot [bool]) { Add-PsdSchemaError $S 'PSD500' "$flag in $($rule.Name) has to be `$true or `$false." (& $sub $flag) }
+            else { $rule[$flag] = $x }
         }
     }
     if ($Value.Contains('Description')) { $rule.Description = [string]$Value['Description'] }
@@ -196,10 +190,7 @@ function New-PsdRule {
         if ($p -isnot [System.Collections.IDictionary]) { Add-PsdSchemaError $S 'PSD500' "Properties in $($rule.Name) has to be a map of keys and their rules." (& $sub 'Properties') }
         else {
             $rule.Properties = [ordered]@{}
-            foreach ($k in $p.PSBase.Keys) {
-                $kk = & $sub 'Properties'; $kk.Add($k)
-                $rule.Properties[$k] = New-PsdRule $p[$k] $kk $S $false
-            }
+            foreach ($k in $p.PSBase.Keys) { $rule.Properties[$k] = New-PsdRule $p[$k] (Join-PsdList (& $sub 'Properties') $k) $S $false }
         }
     }
     if ($Value.Contains('Items')) { $rule.Items = New-PsdRule $Value['Items'] (& $sub 'Items') $S $false }
@@ -234,8 +225,7 @@ function Test-PsdTypeSpec {
     param($Value, $Spec)
     if ($Spec.List) {
         if (-not (Test-PsdList $Value)) { return $false }
-        $item = @{}
-        foreach ($k in $Spec.PSBase.Keys) { $item[$k] = $Spec[$k] }
+        $item = $Spec.Clone()
         $item.List = $false
         foreach ($x in $Value) { if (-not (Test-PsdTypeSpec $x $item)) { return $false } }
         return $true
@@ -274,18 +264,10 @@ function Test-PsdTypeSpec {
 
 function Get-PsdTypeSpecText {
     param($Spec)
-    $base = switch ($Spec.Kind) {
-        'enum' { "one of $($Spec.Members -join ', ')" }
-        'conv' { "a $($Spec.Name)" }
-        default {
-            switch ($Spec.Name) {
-                'string' { 'text' } 'int' { 'a whole number' } 'double' { 'a number' } 'bool' { '$true or $false' }
-                'map' { 'a map' } 'array' { 'a list' } 'any' { 'anything' } 'null' { '$null' }
-            }
-        }
-    }
     if ($Spec.List) { return "a list of $($Spec.Text.Substring(0, $Spec.Text.Length - 2))" }
-    $base
+    if ($Spec.Kind -eq 'enum') { return "one of $($Spec.Members -join ', ')" }
+    if ($Spec.Kind -eq 'conv') { return "a $($Spec.Name)" }
+    @{ string = 'text'; int = 'a whole number'; double = 'a number'; bool = '$true or $false'; map = 'a map'; array = 'a list'; any = 'anything'; null = '$null' }[$Spec.Name]
 }
 
 function Get-PsdRuleHint {
@@ -336,9 +318,7 @@ function Test-PsdValueRule {
         }
     }
     if ($null -ne $Rule.Enum) {
-        $in = $false
-        foreach ($x in $Rule.Enum) { if (Test-PsdEqual $x $Value) { $in = $true; break } }
-        if (-not $in) {
+        if (-not (Test-PsdListHas $Rule.Enum $Value)) {
             $vals = @($Rule.Enum | ForEach-Object { Format-PsdScalarText $_ }) -join ', '
             Add-PsdValueError $Ctx 'PSD504' "$shown can't be $(Format-PsdValueShort $Value)." $Node (@("Allowed values: $vals") + $hint)
             return
@@ -387,9 +367,11 @@ function Test-PsdValueRule {
                 if ($props[$k].Required -and -not $Value.Contains($k)) {
                     $cp = Join-PsdPath $Path $k
                     $files = New-PsdList
-                    if ($Doc) { for ($i = $Doc.Layers.Count - 1; $i -ge 0; $i--) { $f = $Doc.Layers[$i].File; if (-not $f.Synthetic -or $f.Named) { $files.Add($f.Name + $f.Ext) } } }
                     $file = $null
-                    if ($Doc) { $file = $Doc.Entry }
+                    if ($Doc) {
+                        $file = $Doc.Entry
+                        for ($i = $Doc.Layers.Count - 1; $i -ge 0; $i--) { $f = $Doc.Layers[$i].File; if (-not $f.Synthetic -or $f.Named) { $files.Add($f.Name + $f.Ext) } }
+                    }
                     $extra = @()
                     if ($files.Count -gt 0) { $extra = @("Looked in: $($files -join ', ')") }
                     Add-PsdError $Ctx 'PSD502' "$cp is required, but none of these files set it." -File $file -Key $cp -Hint ($extra + (Get-PsdRuleHint $props[$k]))
