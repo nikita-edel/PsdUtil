@@ -26,15 +26,13 @@ function Resolve-PsdDoc {
 # Checks a merged document against the rules of a schema.
 function Test-PsdDocSchema {
     param($Value, $Doc, $Rules, $Ctx, [bool] $Raw = $false)
-    $rules = $Rules
-    if ($null -eq $rules) { return }
-    Test-PsdValueRule $Value $Doc.Tree $rules '' $Ctx $Doc
+    Test-PsdValueRule $Value $Doc.Tree $Rules '' $Ctx $Doc
     if (-not $Raw) { return }
     foreach ($l in $Doc.Layers) {
         if ($l.File.Synthetic) { continue }
         $own = Get-PsdOwnTree $Doc $l.File
         $ov = Get-PsdNodeValue $own $Doc
-        Test-PsdValueRule $ov $own $rules '' $Ctx $Doc -NoRequired
+        Test-PsdValueRule $ov $own $Rules '' $Ctx $Doc -NoRequired
     }
 }
 

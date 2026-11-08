@@ -14,20 +14,13 @@ function ConvertFrom-Psd {
     The name the text gets, for !<@name> and error messages. Defaults to 'input'.
 
     .PARAMETER Include
-    Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
-    Their keys aren't in the result and the schema doesn't check them.
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
 
     .PARAMETER Loader
-    Reads files that aren't .psd1, like .ps1 scripts that return a map or a generated class: a script
-    block that gets the full path and returns the map, for example { param($Path) & $Path }. PsdUtil
-    itself runs no code; without -Loader a .ps1 is error PSD108. What the loader returns is the file:
-    '!merge', '!include', '!name' and '!schema' work in it, with paths relative to its folder.
+    Reads files that aren't .psd1, like .ps1 scripts. See Import-Psd.
+
     .PARAMETER Merge
-    Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
-    adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
-    number of keys. Operators: +=, =+, |= for lists, := to replace a map instead of merging it. An
-    operator is used only where it fits the value; one written in the data wins. The first pattern that
-    matches wins, then Merge in the schema. Use [ordered]@{ } when the order matters.
+    Default operators for keys written without one, by key path. See Import-Psd.
 
     .EXAMPLE
     ConvertFrom-Psd -Text "@{ A = 1; B = '!<A>' }"

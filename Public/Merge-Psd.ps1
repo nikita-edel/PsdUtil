@@ -19,20 +19,13 @@ function Merge-Psd {
     Checks the merged result, with the same messages as Import-Psd. Merge in it gives keys their default operator.
 
     .PARAMETER Include
-    Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
-    Their keys aren't in the result and the schema doesn't check them.
+    Maps from the caller, by name, read with !<name::Key>. See Import-Psd.
 
     .PARAMETER Loader
-    Reads files that aren't .psd1, like .ps1 scripts that return a map or a generated class: a script
-    block that gets the full path and returns the map, for example { param($Path) & $Path }. PsdUtil
-    itself runs no code; without -Loader a .ps1 is error PSD108. What the loader returns is the file:
-    '!merge', '!include', '!name' and '!schema' work in it, with paths relative to its folder.
+    Reads files that aren't .psd1, like .ps1 scripts. See Import-Psd.
+
     .PARAMETER Merge
-    Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
-    adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
-    number of keys. Operators: +=, =+, |= for lists, := to replace a map instead of merging it. An
-    operator is used only where it fits the value; one written in the data wins. The first pattern that
-    matches wins, then Merge in the schema. Use [ordered]@{ } when the order matters.
+    Default operators for keys written without one, by key path. See Import-Psd.
 
     .EXAMPLE
     Merge-Psd ./base.psd1, ./prod.psd1, @{ Tags = @('y') }
@@ -74,10 +67,10 @@ function Merge-Psd {
             foreach ($l in (Get-PsdLayers $f $ctx)) { $layers.Add($l) }
             $entry = $f
         }
-        elseif ($item -is [System.Collections.IDictionary] -or $item -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $item)) {
+        elseif (Test-PsdMapLike $item) {
             $sf = New-PsdSyntheticFile "input $n" $null
             $sf.Root = ConvertFrom-PsdObject $item $sf $ctx '' -AllowName
-            $layers.Add(@{ File = $sf; Only = $null; Root = $null })
+            $layers.Add((New-PsdLayer $sf))
             if ($sf.Named) { $entry = $sf }
         }
         else { Add-PsdError $ctx 'PSD206' "input $n is $(Get-PsdKindText $item). Merge-Psd takes paths and maps." }
@@ -86,9 +79,7 @@ function Merge-Psd {
         $have = New-PsdList
         foreach ($l in $layers) { foreach ($x in (Get-PsdTopKeys $l.File.Root)) { $have.Add($x) } }
         foreach ($k in $Key) {
-            $hit = $false
-            foreach ($h in $have) { if ($h -ieq $k) { $hit = $true } }
-            if (-not $hit) { Add-PsdError $ctx 'PSD207' "'$k' isn't a key in any of the inputs." -Hint @((Get-PsdDidYouMean $k $have)) }
+            if ($have -inotcontains $k) { Add-PsdError $ctx 'PSD207' "'$k' isn't a key in any of the inputs." -Hint @((Get-PsdDidYouMean $k $have)) }
         }
     }
     if ($null -eq $entry) { $entry = New-PsdSyntheticFile 'merge' $null; $entry.Root = New-PsdMapNode $entry $null '' }

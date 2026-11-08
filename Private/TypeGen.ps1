@@ -1,7 +1,5 @@
 # Classes and enums from a schema, for autocomplete in config scripts.
 
-$script:PsdRxIdent = New-Object regex '^[A-Za-z_][A-Za-z0-9_]*$'
-
 function ConvertTo-PsdPascal {
     param([string] $Text)
     $out = ''
@@ -63,16 +61,14 @@ function Get-PsdTypeExpr {
             if ($s.Kind -eq 'base' -and $s.Name -eq 'map' -and -not $s.List -and $Rule.Properties) {
                 $names = @($specs | ForEach-Object { "'" + $_.Text + "'" }) -join ' or '
                 $G.Comments = @("# $Key allows $names, so $Owner.$Key is [object].", '# Cast to this class to get completion for the map form.')
-                $cn = Add-PsdTypeClass $G $Rule $Path
-                if ($null -eq $cn) { return 'object' }
+                $null = Add-PsdTypeClass $G $Rule $Path
             }
         }
         return 'object'
     }
     $spec = $specs[0]
     if ($spec.List) {
-        $item = @{}
-        foreach ($k in $spec.PSBase.Keys) { $item[$k] = $spec[$k] }
+        $item = $spec.Clone()
         $item.List = $false
         $itemRule = @{ Types = (New-PsdList); Enum = $null; Properties = $null; Items = $null }
         $itemRule.Types.Add($item)
@@ -109,7 +105,6 @@ function Get-PsdTypeExpr {
             if ($Rule.Properties) {
                 $cn = Add-PsdTypeClass $G $Rule $Path
                 if ($cn) { return $cn }
-                return 'hashtable'
             }
             return 'hashtable'
         }
@@ -238,10 +233,8 @@ function Add-PsdConstantClass {
                 Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: '$($entry.Name)' can't be a property name." -Hint @('A name needs a letter or digit.')
                 continue
             }
-            $same = $null
-            foreach ($k in $members.PSBase.Keys) { if ($k -ieq $member) { $same = $k } }
-            if ($null -ne $same) {
-                Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: '$($members[$same])' and '$($entry.Name)' would both become the property '$member'."
+            if ($members.Contains($member)) {
+                Add-PsdError $G.Ctx 'PSD512' "-Constant ${className}: '$($members[$member])' and '$($entry.Name)' would both become the property '$member'."
                 continue
             }
             $members[$member] = $entry.Name

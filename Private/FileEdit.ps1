@@ -5,17 +5,25 @@ using namespace System.Management.Automation.Language
 function Read-PsdRawFile {
     param([string] $Path, $Ctx)
     if (-not [IO.File]::Exists($Path)) { Add-PsdError $Ctx 'PSD100' "the file $Path doesn't exist."; return $null }
-    $bytes = [IO.File]::ReadAllBytes($Path)
+    try { $bytes = [IO.File]::ReadAllBytes($Path) }
+    catch {
+        Add-PsdError $Ctx 'PSD100' "the file $Path can't be read: $($_.Exception.InnerException.Message)"
+        return $null
+    }
     $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-    $text = (New-Object System.Text.UTF8Encoding $false).GetString($bytes)
+    # Strict: bytes that aren't UTF-8 would be replaced when read, and the damage written back.
+    try { $text = (New-Object System.Text.UTF8Encoding $false, $true).GetString($bytes) }
+    catch {
+        Add-PsdError $Ctx 'PSD606' "the file can't be edited, because it isn't valid UTF-8. Save it as UTF-8." -File (New-PsdFileRec $Path $null)
+        return $null
+    }
     if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
     $nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
     $tokens = $null; $errors = $null
     $ast = [Parser]::ParseInput($text, $Path, [ref]$tokens, [ref]$errors)
     $rec = New-PsdFileRec $Path $text
     if ($errors.Count -gt 0) {
-        $e = $errors[0]
-        Add-PsdError $Ctx 'PSD606' "the file can't be edited, because PowerShell can't read it: $($e.Message.TrimEnd('.'))." -File $rec -Line $e.Extent.StartLineNumber -Column $e.Extent.StartColumnNumber -Length ([Math]::Max(1, $e.Extent.Text.Length))
+        Add-PsdExtentError $Ctx 'PSD606' "the file can't be edited, because PowerShell can't read it: $($errors[0].Message.TrimEnd('.'))." $rec $errors[0].Extent
         return $null
     }
     $root = $null
@@ -44,16 +52,56 @@ function Add-PsdIndent {
     $lines -join $NL
 }
 
+# The items of an array expression. OnReject gets each statement that isn't a plain value.
 function Get-PsdArrayElements {
-    param($Ast)
+    param($Ast, [scriptblock] $OnReject = {})
     $out = New-PsdList
     if ($Ast -is [ArrayLiteralAst]) { foreach ($x in $Ast.Elements) { $out.Add($x) }; return , $out }
     foreach ($st in $Ast.SubExpression.Statements) {
         $e = Get-PsdStatementExpression $st
-        if ($e -is [ArrayLiteralAst]) { foreach ($x in $e.Elements) { $out.Add($x) } }
-        elseif ($null -ne $e) { $out.Add($e) }
+        if ($null -eq $e) { & $OnReject $st }
+        elseif ($e -is [ArrayLiteralAst]) { foreach ($x in $e.Elements) { $out.Add($x) } }
+        else { $out.Add($e) }
     }
     , $out
+}
+
+# The edit that replaces a value. IndentAt is where the line that sets the indentation is.
+function New-PsdValueEdit {
+    param($Raw, $Target, [int] $IndentAt, $Value, $Format, $Ctx)
+    $vt = ConvertTo-PsdTextInternal $Value $Format 64 $Ctx
+    @{ Start = $Target.Extent.StartOffset; End = $Target.Extent.EndOffset; Text = (Add-PsdIndent $vt (Get-PsdLineIndent $Raw.Text $IndentAt) $Raw.NL) }
+}
+
+# The edit that adds key number At of the path to Map. The rest of the path becomes nested maps. $null on errors.
+function New-PsdNewKeyEdit {
+    param($Raw, $Map, $Segs, [int] $At, $Value, $Format, $Ctx)
+    $text = $Raw.Text
+    $nl = $Raw.NL
+    $v = $Value
+    for ($j = $Segs.Count - 1; $j -gt $At; $j--) {
+        if ($Segs[$j].IsIndex) {
+            Add-PsdError $Ctx 'PSD607' "$(Format-PsdSegs $Segs $j) doesn't exist, so [$($Segs[$j].Index)] can't be set." -File $Raw.Rec
+            return $null
+        }
+        $m = [ordered]@{}; $m[$Segs[$j].Key] = $v; $v = $m
+    }
+    $keyText = Format-PsdKeyOut $Segs[$At].Key @{ Ctx = $Ctx; Path = (Format-PsdSegs $Segs $At) }
+    if ($null -eq $keyText) { return $null }
+    $hs = $Map.Extent.StartOffset
+    $he = $Map.Extent.EndOffset
+    if ($Map.KeyValuePairs.Count -gt 0) { $indent = Get-PsdLineIndent $text $Map.KeyValuePairs[0].Item1.Extent.StartOffset }
+    else { $indent = (Get-PsdLineIndent $text $hs) + (' ' * $Format.Indent) }
+    $entry = "$keyText = " + (Add-PsdIndent (ConvertTo-PsdTextInternal $v $Format 64 $Ctx) $indent $nl)
+    if ($Map.Extent.StartLineNumber -ne $Map.Extent.EndLineNumber) {
+        $close = $he - 1
+        $lineStart = $text.LastIndexOf("`n", $close - 1) + 1
+        if ($text.Substring($lineStart, $close - $lineStart).Trim().Length -eq 0) { return @{ Start = $lineStart; End = $lineStart; Text = "$indent$entry$nl" } }
+        return @{ Start = $close; End = $close; Text = "$nl$indent$entry$nl$(Get-PsdLineIndent $text $hs)" }
+    }
+    if ($Map.KeyValuePairs.Count -eq 0) { return @{ Start = $hs; End = $he; Text = "@{ $entry }" } }
+    $end = $Map.KeyValuePairs[$Map.KeyValuePairs.Count - 1].Item2.Extent.EndOffset
+    @{ Start = $end; End = $end; Text = "; $entry" }
 }
 
 function Update-PsdFileValue {
@@ -61,10 +109,8 @@ function Update-PsdFileValue {
     $raw = Read-PsdRawFile $Path $Ctx
     if ($null -eq $raw) { return $false }
     $text = $raw.Text
-    $nl = $raw.NL
-    $fmt = @{}
-    foreach ($k in $Format.PSBase.Keys) { $fmt[$k] = $Format[$k] }
-    $fmt.LineEnding = if ($nl -eq "`r`n") { 'CRLF' } else { 'LF' }
+    $Format.LineEnding = if ($raw.NL -eq "`r`n") { 'CRLF' } else { 'LF' }
+    $fail = { param($message) Add-PsdError $Ctx 'PSD607' $message -File $raw.Rec }
     $cur = $raw.Root
     $edit = $null
     for ($i = 0; $i -lt $Segs.Count; $i++) {
@@ -73,72 +119,29 @@ function Update-PsdFileValue {
         $under = Format-PsdSegs $Segs $i
         $shownUnder = if ($under) { $under } else { 'the file' }
         if ($cur -is [HashtableAst]) {
-            if ($seg.IsIndex) { Add-PsdError $Ctx 'PSD607' "$shownUnder is a map, so [$($seg.Index)] can't be used on it." -File $raw.Rec; return $false }
+            if ($seg.IsIndex) { & $fail "$shownUnder is a map, so [$($seg.Index)] can't be used on it."; return $false }
             $pair = $null
             foreach ($p in $cur.KeyValuePairs) {
                 if ($p.Item1 -is [StringConstantExpressionAst] -and $p.Item1.Value -ieq $seg.Key) { $pair = $p; break }
             }
-            if ($pair) {
-                $expr = Get-PsdStatementExpression $pair.Item2
-                if ($null -eq $expr) { Add-PsdError $Ctx 'PSD607' "$(Format-PsdSegs $Segs ($i + 1)) isn't a plain value, so it can't be changed." -File $raw.Rec; return $false }
-                if ($last) {
-                    $indent = Get-PsdLineIndent $text $pair.Item1.Extent.StartOffset
-                    $vt = ConvertTo-PsdTextInternal $Value $fmt 64 $Ctx
-                    $edit = @{ Start = $expr.Extent.StartOffset; End = $expr.Extent.EndOffset; Text = (Add-PsdIndent $vt $indent $nl) }
-                    break
-                }
-                $cur = $expr
-                continue
-            }
-            # The key is new: build the rest of the path as nested maps.
-            $v = $Value
-            for ($j = $Segs.Count - 1; $j -gt $i; $j--) {
-                if ($Segs[$j].IsIndex) { Add-PsdError $Ctx 'PSD607' "$(Format-PsdSegs $Segs $j) doesn't exist, so [$($Segs[$j].Index)] can't be set." -File $raw.Rec; return $false }
-                $m = [ordered]@{}; $m[$Segs[$j].Key] = $v; $v = $m
-            }
-            $S = @{ Ctx = $Ctx; Path = $under }
-            $keyText = Format-PsdKeyOut $seg.Key $S
-            if ($null -eq $keyText) { return $false }
-            $hs = $cur.Extent.StartOffset
-            $he = $cur.Extent.EndOffset
-            if ($cur.KeyValuePairs.Count -gt 0) { $indent = Get-PsdLineIndent $text $cur.KeyValuePairs[0].Item1.Extent.StartOffset }
-            else { $indent = (Get-PsdLineIndent $text $hs) + (' ' * $fmt.Indent) }
-            $vt = Add-PsdIndent (ConvertTo-PsdTextInternal $v $fmt 64 $Ctx) $indent $nl
-            $entry = "$keyText = $vt"
-            if ($cur.Extent.StartLineNumber -ne $cur.Extent.EndLineNumber) {
-                $close = $he - 1
-                $lineStart = $text.LastIndexOf("`n", $close - 1) + 1
-                if ($text.Substring($lineStart, $close - $lineStart).Trim().Length -eq 0) {
-                    $edit = @{ Start = $lineStart; End = $lineStart; Text = "$indent$entry$nl" }
-                }
-                else {
-                    $edit = @{ Start = $close; End = $close; Text = "$nl$indent$entry$nl$(Get-PsdLineIndent $text $hs)" }
-                }
-            }
-            elseif ($cur.KeyValuePairs.Count -gt 0) {
-                $lastPair = $cur.KeyValuePairs[$cur.KeyValuePairs.Count - 1]
-                $edit = @{ Start = $lastPair.Item2.Extent.EndOffset; End = $lastPair.Item2.Extent.EndOffset; Text = "; $entry" }
-            }
-            else { $edit = @{ Start = $hs; End = $he; Text = "@{ $entry }" } }
-            break
+            if (-not $pair) { $edit = New-PsdNewKeyEdit $raw $cur $Segs $i $Value $Format $Ctx; break }
+            $expr = Get-PsdStatementExpression $pair.Item2
+            if ($null -eq $expr) { & $fail "$(Format-PsdSegs $Segs ($i + 1)) isn't a plain value, so it can't be changed."; return $false }
+            if ($last) { $edit = New-PsdValueEdit $raw $expr $pair.Item1.Extent.StartOffset $Value $Format $Ctx; break }
+            $cur = $expr
+            continue
         }
         if ($cur -is [ArrayExpressionAst] -or $cur -is [ArrayLiteralAst]) {
-            if (-not $seg.IsIndex) { Add-PsdError $Ctx 'PSD607' "$shownUnder is a list, so .$($seg.Key) can't be used on it." -File $raw.Rec; return $false }
+            if (-not $seg.IsIndex) { & $fail "$shownUnder is a list, so .$($seg.Key) can't be used on it."; return $false }
             $els = Get-PsdArrayElements $cur
             $idx = $seg.Index
             if ($idx -lt 0) { $idx += $els.Count }
-            if ($idx -lt 0 -or $idx -ge $els.Count) { Add-PsdError $Ctx 'PSD607' "$shownUnder has $($els.Count) items, so [$($seg.Index)] doesn't exist." -File $raw.Rec; return $false }
-            $el = $els[$idx]
-            if ($last) {
-                $indent = Get-PsdLineIndent $text $el.Extent.StartOffset
-                $vt = ConvertTo-PsdTextInternal $Value $fmt 64 $Ctx
-                $edit = @{ Start = $el.Extent.StartOffset; End = $el.Extent.EndOffset; Text = (Add-PsdIndent $vt $indent $nl) }
-                break
-            }
-            $cur = $el
+            if ($idx -lt 0 -or $idx -ge $els.Count) { & $fail "$shownUnder has $($els.Count) items, so [$($seg.Index)] doesn't exist."; return $false }
+            if ($last) { $edit = New-PsdValueEdit $raw $els[$idx] $els[$idx].Extent.StartOffset $Value $Format $Ctx; break }
+            $cur = $els[$idx]
             continue
         }
-        Add-PsdError $Ctx 'PSD607' "$shownUnder is a single value, so it has nothing inside it to change." -File $raw.Rec
+        & $fail "$shownUnder is a single value, so it has nothing inside it to change."
         return $false
     }
     if ($Ctx.Errors.Count -gt 0 -or $null -eq $edit) { return $false }
@@ -183,6 +186,7 @@ function Format-PsdFileText {
             if ($t.Extent.EndOffset -gt $s) { $inside = $true }
             $ti++
         }
+        # A token that continues past this line keeps its own line breaks.
         if ($inside) { $out.Add($lines[$i]); $info.Add($null); continue }
         $trim = $lines[$i].Trim()
         if ($trim.Length -eq 0) { $out.Add(''); $info.Add($null); continue }
@@ -193,9 +197,7 @@ function Format-PsdFileText {
             if ($ti + 1 -lt $tokens.Count -and $tokens[$ti + 1].Extent.StartLineNumber -eq ($i + 1)) { $second = $tokens[$ti + 1] }
         }
         if ($first -and $closes -contains [string]$first.Kind) { $d = [Math]::Max(0, $d - 1) }
-        $pad = ' ' * ($Format.Indent * $d)
-        # A token that continues past this line keeps its own line breaks.
-        $out.Add($pad + $lines[$i].TrimStart().TrimEnd())
+        $out.Add((' ' * ($Format.Indent * $d)) + $trim)
         $isKey = $first -and $second -and [string]$second.Kind -eq 'Equals' -and $d -gt 0
         if ($isKey) { $info.Add(@{ Depth = $d; Key = $first.Extent.Text }) } else { $info.Add($null) }
     }

@@ -16,8 +16,7 @@ function Get-PsdNodeValue {
         $Doc.RefDepth++
         if ($Doc.RefDepth -gt $ctx.Limits.MaxDepth) {
             $Doc.RefDepth--
-            $loc = Get-PsdNodeLoc $Node
-            Add-PsdLimitError $ctx 'MaxDepth' "while following references at $($Node.Path)" $loc.File $loc.Line $loc.Col
+            Add-PsdLimitError $ctx 'MaxDepth' "while following references at $($Node.Path)" $Node
             return $null
         }
     }
@@ -49,13 +48,12 @@ function Get-PsdNodeValue {
 
 function Add-PsdCycleError {
     param($Node, $Doc)
-    $start = 0
-    for ($i = 0; $i -lt $Doc.ResList.Count; $i++) { if ($Doc.ResList[$i].Id -eq $Node.Id) { $start = $i; break } }
+    $start = $Doc.ResList.IndexOf($Node)
+    $chain = $Doc.ResList.GetRange($start, $Doc.ResList.Count - $start)
     $extra = New-PsdList
     $width = 0
-    for ($i = $start; $i -lt $Doc.ResList.Count; $i++) { $width = [Math]::Max($width, [string]$Doc.ResList[$i].Path.Length) }
-    for ($i = $start; $i -lt $Doc.ResList.Count; $i++) {
-        $n = $Doc.ResList[$i]
+    foreach ($n in $chain) { $width = [Math]::Max($width, $n.Path.Length) }
+    foreach ($n in $chain) {
         $label = $n.Path
         if (-not $label) { $label = '(the whole file)' }
         $where = ''
@@ -77,18 +75,12 @@ function Add-PsdCycleError {
 
 function Measure-PsdSize {
     param($Value, [int] $Budget)
-    if ($Budget -le 0) { return 1 }
-    if ($Value -is [System.Collections.IDictionary]) {
-        $n = 1
-        foreach ($k in $Value.PSBase.Keys) { $n += Measure-PsdSize $Value[$k] ($Budget - $n); if ($n -gt $Budget) { break } }
-        return $n
-    }
-    if (Test-PsdList $Value) {
-        $n = 1
-        foreach ($x in $Value) { $n += Measure-PsdSize $x ($Budget - $n); if ($n -gt $Budget) { break } }
-        return $n
-    }
-    1
+    if ($Budget -le 0 -or -not (Test-PsdContainer $Value)) { return 1 }
+    $items = $Value
+    if ($Value -is [System.Collections.IDictionary]) { $items = $Value.PSBase.Values }
+    $n = 1
+    foreach ($x in $items) { $n += Measure-PsdSize $x ($Budget - $n); if ($n -gt $Budget) { break } }
+    $n
 }
 
 function Resolve-PsdText {
@@ -96,21 +88,22 @@ function Resolve-PsdText {
     $ctx = $Doc.Ctx
     $ev = @{ Doc = $Doc; Node = $Node; InCond = $false; Final = $null }
     $parts = $Node.Parts
-    if ($null -ne $ctx.Trace) { $ctx.Trace.Add(@{ Depth = $Doc.RefDepth; Step = $Node.Path; Text = $Node.Text; Value = $null; Pending = $true }) }
-    $traceIdx = -1
-    if ($null -ne $ctx.Trace) { $traceIdx = $ctx.Trace.Count - 1 }
+    $step = $null
+    if ($null -ne $ctx.Trace) {
+        $step = @{ Depth = $Doc.RefDepth; Step = $Node.Path; Text = $Node.Text; Value = $null }
+        $ctx.Trace.Add($step)
+    }
 
     if ($parts.Count -eq 1 -and $parts[0] -isnot [string]) {
         $v = Invoke-PsdRef $parts[0] $ev
         if (Test-PsdContainer $v) {
             $ctx.Nodes += Measure-PsdSize $v ($ctx.Limits.MaxNodes - $ctx.Nodes + 1)
             if ($ctx.Nodes -gt $ctx.Limits.MaxNodes) {
-                $loc = Get-PsdNodeLoc $Node
-                Add-PsdLimitError $ctx 'MaxNodes' "while copying values through references at $($Node.Path)" $loc.File $loc.Line $loc.Col
+                Add-PsdLimitError $ctx 'MaxNodes' "while copying values through references at $($Node.Path)" $Node
                 return $null
             }
         }
-        if ($traceIdx -ge 0) { $ctx.Trace[$traceIdx].Value = $v; $ctx.Trace[$traceIdx].Pending = $false }
+        if ($step) { $step.Value = $v }
         return , $v
     }
     $sb = New-Object System.Text.StringBuilder
@@ -126,13 +119,12 @@ function Resolve-PsdText {
         }
         [void]$sb.Append((Format-PsdScalarText $v))
         if ($sb.Length -gt $ctx.Limits.MaxStringLength) {
-            $loc = Get-PsdNodeLoc $Node
-            Add-PsdLimitError $ctx 'MaxStringLength' "while building the text of $($Node.Path)" $loc.File $loc.Line $loc.Col
+            Add-PsdLimitError $ctx 'MaxStringLength' "while building the text of $($Node.Path)" $Node
             return $null
         }
     }
     $s = $sb.ToString()
-    if ($traceIdx -ge 0) { $ctx.Trace[$traceIdx].Value = $s; $ctx.Trace[$traceIdx].Pending = $false }
+    if ($step) { $step.Value = $s }
     $s
 }
 
@@ -163,11 +155,7 @@ function Invoke-PsdExpr {
             if ($null -ne $v) { $value = $v; break }
         }
     }
-    if ($null -ne $miss) {
-        $keep = Write-PsdUnresolved $miss $Ev $Ref
-        if ($keep) { return @{ Value = $null; Keep = $true } }
-        return @{ Value = $null; Keep = $false }
-    }
+    if ($null -ne $miss) { return @{ Value = $null; Keep = (Write-PsdUnresolved $miss $Ev $Ref) } }
     $ctx = $Ev.Doc.Ctx
     foreach ($f in $Expr.Filters) {
         $fargs = New-PsdList
@@ -189,37 +177,20 @@ function Write-PsdUnresolved {
     $mode = $ctx.Unresolved
     $code = $Miss.Code
     $msg = $Miss.Message
-    if ($Ev.InCond -and $code -eq 'PSD301' -and $Miss.Op -and -not $Miss.Op.Ns -and (Test-PsdAllTreeHas $Ev.Final $Miss.Op)) {
+    if ($Ev.InCond -and $code -eq 'PSD301' -and $Miss.Op -and -not $Miss.Op.Ns -and $null -ne $Ev.Final -and (Test-PsdTreePath (Get-PsdAllTree $Ev.Final) $Miss.Op.Segs)) {
         $code = 'PSD401'
         $msg = "this condition reads $(Format-PsdSegs $Miss.Op.Segs), but that is only set inside an !if, and conditions can't see inside an !if."
         $mode = 'Error'
     }
-    switch ($mode) {
-        'Error' {
-            Add-PsdNodeError $ctx $code $msg $Ev.Node ($Ref.Start + $Miss.Start) $Miss.Length -Hint $Miss.Hint
-            return $false
-        }
-        'Warn' {
-            $loc = Get-PsdNodeLoc $Ev.Node ($Ref.Start + $Miss.Start) $Miss.Length
-            $where = ''
-            if ($loc.File) { $where = "$($loc.File.Name + $loc.File.Ext), line $($loc.Line): " }
-            $ctx.Warnings.Add("$where$msg It became `$null.")
-            return $false
-        }
-        'Keep' { return $true }
+    if ($mode -eq 'Keep') { return $true }
+    if ($mode -eq 'Error') { Add-PsdNodeError $ctx $code $msg $Ev.Node ($Ref.Start + $Miss.Start) $Miss.Length -Hint $Miss.Hint }
+    elseif ($mode -eq 'Warn') {
+        $loc = Get-PsdNodeLoc $Ev.Node ($Ref.Start + $Miss.Start) $Miss.Length
+        $where = ''
+        if ($loc.File) { $where = "$($loc.File.Name + $loc.File.Ext), line $($loc.Line): " }
+        $ctx.Warnings.Add("$where$msg It became `$null.")
     }
     $false
-}
-
-function Test-PsdAllTreeHas {
-    param($Doc, $Op)
-    if ($null -eq $Doc) { return $false }
-    $cur = Get-PsdAllTree $Doc
-    foreach ($seg in $Op.Segs) {
-        if ($seg.IsIndex -or $cur.K -ne 'M' -or -not $cur.V.Contains($seg.Key)) { return $false }
-        $cur = $cur.V[$seg.Key]
-    }
-    $true
 }
 
 function New-PsdMiss {
@@ -262,65 +233,14 @@ function Get-PsdPathValue {
         return $ok
     }
 
-    $file = $doc.Entry
-    $tdoc = $doc
-    $root = $null
-    # keys of the includes, for "did you mean" when a key without name:: is nowhere
-    $includeKeys = New-PsdList
-    # includes that have the first key too, when this file has it: they are named in a note or a hint
-    $alsoIn = New-PsdList
-    # the include a key without name:: was read from, because this file doesn't have it
-    $viaInclude = $null
-    if ($Op.Ns) {
-        # The namespace sits at the start of the operand, after an optional '?'.
-        $nsStart = $Ref.Raw.IndexOf($Op.Ns, $rel)
-        $t = Get-PsdNsFile $Op $Ev ($Ref.Start + $nsStart)
-        if ($null -eq $t) { return $fail }
-        $file = $t.File
-        $tdoc = $t.Doc
-        if (-not $Op.Builtin) {
-            if ($t.Own) { $root = Get-PsdOwnTree $tdoc $file } else { $root = $tdoc.Tree }
-        }
-    }
-    elseif (-not $Op.Builtin) {
-        $root = $doc.Tree
-        # A key that isn't in this document is read from the one include that has it, exactly as if name::
-        # were written. Several includes with it are an error, so nothing depends on their order.
-        $first = $Op.Segs[0]
-        $hits = New-PsdList
-        if (-not $first.IsIndex -and $root.K -eq 'M') {
-            foreach ($name in @($doc.Inc.PSBase.Keys | Sort-Object)) {
-                $t = $doc.Inc[$name].Tree
-                if ($null -ne $t -and $t.K -eq 'M') {
-                    foreach ($k in $t.V.PSBase.Keys) { $includeKeys.Add($k) }
-                    if ($t.V.Contains($first.Key)) { $hits.Add($name) }
-                }
-            }
-        }
-        if ($root.K -eq 'M' -and -not $first.IsIndex -and $root.V.Contains($first.Key)) {
-            foreach ($h in $hits) { $alsoIn.Add($h) }
-        }
-        elseif ($hits.Count -gt 0) {
-            if ($hits.Count -gt 1) {
-                $segRel = $first.Start - $Ref.Start
-                $choices = @($hits | ForEach-Object { "!<$($_)::$(Format-PsdSegs $Op.Segs $Op.Segs.Count)>" }) -join ' or '
-                Add-PsdNodeError $ctx 'PSD313' "'$($first.Key)' isn't in this file but in $($hits.Count) includes: $($hits -join ', '), so it's unclear which one is meant." $Ev.Node ($Ref.Start + $segRel) ($first.End - $first.Start) -Hint @("Write the one you mean: $choices.")
-                return $fail
-            }
-            if ($hits.Count -eq 1) {
-                $viaInclude = $hits[0]
-                $tdoc = $doc.Inc[$hits[0]]
-                $file = $tdoc.Entry
-                $root = $tdoc.Tree
-            }
-        }
-    }
+    $from = Get-PsdPathStart $Op $Ev $Ref $rel
+    if ($null -eq $from) { return $fail }
 
     if ($Op.Builtin) {
         switch ($Op.Builtin.ToLowerInvariant()) {
-            'name' { $ok.Value = $file.Ns }
-            'file' { $ok.Value = ConvertTo-PsdSlashPath $file.Path }
-            'dir' { $ok.Value = (ConvertTo-PsdSlashPath $file.Dir).TrimEnd('/') }
+            'name' { $ok.Value = $from.File.Ns }
+            'file' { $ok.Value = ConvertTo-PsdSlashPath $from.File.Path }
+            'dir' { $ok.Value = (ConvertTo-PsdSlashPath $from.File.Dir).TrimEnd('/') }
             'os' { $ok.Value = Get-PsdOsName }
             default {
                 $at = $Ref.Raw.IndexOf('@', $rel)
@@ -332,7 +252,9 @@ function Get-PsdPathValue {
         return $ok
     }
 
-    $cur = $root
+    # $cur is a tree node while $isNode, then a plain value once a reference or a scalar was reached. Either way
+    # $data is what can be looked into: a map, a list, a scalar or $null.
+    $cur = $from.Root
     $isNode = $true
     $segs = $Op.Segs
     for ($i = 0; $i -lt $segs.Count; $i++) {
@@ -340,102 +262,151 @@ function Get-PsdPathValue {
         $segRel = $seg.Start - $Ref.Start
         $segLen = $seg.End - $seg.Start
         $under = Format-PsdSegs $segs $i
-        if ($isNode) {
-            if ($cur.K -eq 'T' -or $cur.K -eq 'O') { $cur = Get-PsdNodeValue $cur $tdoc; $isNode = $false }
-            elseif ($cur.K -eq 'S') { $cur = $cur.V; $isNode = $false }
-        }
-        $kindNow = $null
-        $keys = $null
-        $count = 0
-        if ($isNode) {
-            if ($cur.K -eq 'M') { $kindNow = 'map'; $keys = $cur.V.PSBase.Keys }
-            else { $kindNow = 'list'; $count = $cur.V.Count }
-        }
-        elseif ($null -eq $cur) { $kindNow = 'null' }
-        elseif ($cur -is [System.Collections.IDictionary]) { $kindNow = 'map'; $keys = $cur.PSBase.Keys }
-        elseif (Test-PsdList $cur) { $kindNow = 'list'; $count = $cur.Count }
-        else { $kindNow = 'scalar' }
+        if ($isNode -and $cur.K -in 'T', 'O') { $cur = Get-PsdNodeValue $cur $from.Doc; $isNode = $false }
+        elseif ($isNode -and $cur.K -eq 'S') { $cur = $cur.V; $isNode = $false }
+        $data = $cur
+        if ($isNode) { $data = $cur.V }
 
-        if ($kindNow -eq 'null') {
+        if ($null -eq $data) {
             $what = if ($seg.IsIndex) { "[$($seg.Index)]" } else { "'$($seg.Key)'" }
             return (New-PsdMiss 'PSD301' "$what can't be read, because $under is `$null." $segRel $segLen @() $Op)
         }
-        if ($kindNow -eq 'scalar') {
-            Add-PsdNodeError $ctx 'PSD304' "$under is $(Get-PsdKindText $cur), so it has nothing inside it to read." $Ev.Node ($Ref.Start + $segRel) $segLen
+        if (-not (Test-PsdContainer $data)) {
+            Add-PsdNodeError $ctx 'PSD304' "$under is $(Get-PsdKindText $data), so it has nothing inside it to read." $Ev.Node $seg.Start $segLen
             return $fail
         }
-        if ($kindNow -eq 'map') {
+        if ($data -is [System.Collections.IDictionary]) {
             if ($seg.IsIndex) {
-                Add-PsdNodeError $ctx 'PSD308' "$under is a map, so [$($seg.Index)] can't be used on it. Use a key: $under.Name" $Ev.Node ($Ref.Start + $segRel) $segLen
+                Add-PsdNodeError $ctx 'PSD308' "$under is a map, so [$($seg.Index)] can't be used on it. Use a key: $under.Name" $Ev.Node $seg.Start $segLen
                 return $fail
             }
-            $has = $false
-            if ($isNode) { $has = $cur.V.Contains($seg.Key) } else { $has = $cur.Contains($seg.Key) }
-            if (-not $has) {
-                $in = ''
-                if ($Op.Ns) { $in = " in $($file.Name + $file.Ext)" }
-                elseif ($viaInclude) { $in = " in the include $viaInclude" }
-                if ($i -eq 0) { $msg = "'$($seg.Key)' doesn't exist$in." } else { $msg = "'$($seg.Key)' doesn't exist under $under$in." }
-                $candidates = @($keys)
-                if ($i -eq 0 -and -not $Op.Ns) {
-                    if ($includeKeys.Count -gt 0) { $msg = "'$($seg.Key)' doesn't exist in this file or its includes." }
-                    # generic lists: ToArray, @() on them fails
-                    $candidates += $includeKeys.ToArray()
-                }
-                $hint = New-PsdList
-                $dym = Get-PsdDidYouMean $seg.Key $candidates
-                if ($dym) { $hint.Add($dym) }
-                if ($viaInclude) {
-                    $hint.Add("This file and its merge chain have no $($segs[0].Key), so it was read from the include $viaInclude, the only one that has it.")
-                }
-                if ($i -gt 0 -and $alsoIn.Count -gt 0) {
-                    $path = Format-PsdSegs $segs
-                    foreach ($name in $alsoIn) {
-                        if (Test-PsdTreePath $doc.Inc[$name].Tree $segs) { $hint.Add("The include $name has $($path): !<$($name)::$path> reads it.") }
-                        else { $hint.Add("The include $name has $($segs[0].Key) too, but not $path.") }
-                    }
-                    $hint.Add("Without name::, $($segs[0].Key) is read from this file and its merge chain because they have it, and the includes aren't looked at.")
-                }
-                return (New-PsdMiss 'PSD301' $msg $segRel $segLen $hint.ToArray() $Op)
-            }
-            if ($isNode) { $cur = $cur.V[$seg.Key] } else { $cur = $cur[$seg.Key] }
+            if (-not $data.Contains($seg.Key)) { return (New-PsdKeyMiss $Op $from $data $i $segRel $doc) }
+            $cur = $data[$seg.Key]
             continue
         }
         if (-not $seg.IsIndex) {
-            Add-PsdNodeError $ctx 'PSD308' "$under is a list, so .$($seg.Key) can't be used on it. Use an index: $under[0]" $Ev.Node ($Ref.Start + $segRel) $segLen
+            Add-PsdNodeError $ctx 'PSD308' "$under is a list, so .$($seg.Key) can't be used on it. Use an index: $under[0]" $Ev.Node $seg.Start $segLen
             return $fail
         }
         $idx = $seg.Index
-        if ($idx -lt 0) { $idx += $count }
-        if ($idx -lt 0 -or $idx -ge $count) {
-            $items = if ($count -eq 1) { '1 item' } else { "$count items" }
+        if ($idx -lt 0) { $idx += $data.Count }
+        if ($idx -lt 0 -or $idx -ge $data.Count) {
+            $items = if ($data.Count -eq 1) { '1 item' } else { "$($data.Count) items" }
             return (New-PsdMiss 'PSD307' "$under has $items, so [$($seg.Index)] doesn't exist." $segRel $segLen @() $Op)
         }
-        if ($isNode) { $cur = $cur.V[$idx] } else { $cur = $cur[$idx] }
+        $cur = $data[$idx]
     }
-    if ($isNode) { $ok.Value = Get-PsdNodeValue $cur $tdoc } else { $ok.Value = $cur }
-    if ($alsoIn.Count -gt 0) { Add-PsdSourceNote $ctx $Ev $Op $alsoIn }
+    if ($isNode) { $ok.Value = Get-PsdNodeValue $cur $from.Doc } else { $ok.Value = $cur }
+    if ($from.AlsoIn.Count -gt 0) { Add-PsdSourceNote $ctx $Ev $Op $from.AlsoIn }
     $ok
 }
 
-# Returns $true when a path of a reference exists in a tree, without resolving anything.
+# Where a path starts. Returns $null after reporting an error, or:
+#   File, Doc, Root  the file, its document and the tree the path is read from ($null Root for a built-in)
+#   Via              the include a key without name:: was read from, because this file doesn't have it
+#   AlsoIn           includes that have the first key too, when this file has it: named in a note or a hint
+#   IncludeKeys      keys of the includes, for "did you mean" when a key without name:: is nowhere
+function Get-PsdPathStart {
+    param($Op, $Ev, $Ref, [int] $Rel)
+    $doc = $Ev.Doc
+    $from = @{ File = $doc.Entry; Doc = $doc; Root = $null; Via = $null; AlsoIn = (New-PsdList); IncludeKeys = (New-PsdList) }
+    if ($Op.Ns) {
+        # The namespace sits at the start of the operand, after an optional '?'.
+        $t = Get-PsdNsFile $Op $Ev ($Ref.Start + $Ref.Raw.IndexOf($Op.Ns, $Rel))
+        if ($null -eq $t) { return $null }
+        $from.File = $t.File
+        $from.Doc = $t.Doc
+        if (-not $Op.Builtin) {
+            if ($t.Own) { $from.Root = Get-PsdOwnTree $t.Doc $t.File } else { $from.Root = $t.Doc.Tree }
+        }
+        return $from
+    }
+    if ($Op.Builtin) { return $from }
+
+    # A key that isn't in this document is read from the one include that has it, exactly as if name:: were
+    # written. Several includes with it are an error, so nothing depends on their order.
+    $from.Root = $doc.Tree
+    $first = $Op.Segs[0]
+    $byKey = -not $first.IsIndex -and $doc.Tree.K -eq 'M'
+    $hits = New-PsdList
+    if ($byKey) {
+        foreach ($name in @($doc.Inc.PSBase.Keys | Sort-Object)) {
+            $t = $doc.Inc[$name].Tree
+            if ($null -ne $t -and $t.K -eq 'M') {
+                foreach ($k in $t.V.PSBase.Keys) { $from.IncludeKeys.Add($k) }
+                if ($t.V.Contains($first.Key)) { $hits.Add($name) }
+            }
+        }
+    }
+    if ($byKey -and $doc.Tree.V.Contains($first.Key)) { $from.AlsoIn = $hits; return $from }
+    if ($hits.Count -gt 1) {
+        $choices = @($hits | ForEach-Object { "!<$($_)::$(Format-PsdSegs $Op.Segs)>" }) -join ' or '
+        Add-PsdNodeError $doc.Ctx 'PSD313' "'$($first.Key)' isn't in this file but in $($hits.Count) includes: $($hits -join ', '), so it's unclear which one is meant." $Ev.Node $first.Start ($first.End - $first.Start) -Hint @("Write the one you mean: $choices.")
+        return $null
+    }
+    if ($hits.Count -eq 1) {
+        $from.Via = $hits[0]
+        $from.Doc = $doc.Inc[$hits[0]]
+        $from.File = $from.Doc.Entry
+        $from.Root = $from.Doc.Tree
+    }
+    $from
+}
+
+# The miss for key number At of a path, which isn't in Map, with what the includes can tell about it.
+function New-PsdKeyMiss {
+    param($Op, $From, $Map, [int] $At, [int] $Rel, $Doc)
+    $segs = $Op.Segs
+    $seg = $segs[$At]
+    $in = ''
+    if ($Op.Ns) { $in = " in $($From.File.Name + $From.File.Ext)" }
+    elseif ($From.Via) { $in = " in the include $($From.Via)" }
+    if ($At -eq 0) { $msg = "'$($seg.Key)' doesn't exist$in." } else { $msg = "'$($seg.Key)' doesn't exist under $(Format-PsdSegs $segs $At)$in." }
+    $candidates = @($Map.PSBase.Keys)
+    if ($At -eq 0 -and -not $Op.Ns) {
+        if ($From.IncludeKeys.Count -gt 0) { $msg = "'$($seg.Key)' doesn't exist in this file or its includes." }
+        # ToArray: @() on a generic list fails
+        $candidates += $From.IncludeKeys.ToArray()
+    }
+    $hint = New-PsdList
+    $dym = Get-PsdDidYouMean $seg.Key $candidates
+    if ($dym) { $hint.Add($dym) }
+    if ($From.Via) {
+        $hint.Add("This file and its merge chain have no $($segs[0].Key), so it was read from the include $($From.Via), the only one that has it.")
+    }
+    if ($At -gt 0 -and $From.AlsoIn.Count -gt 0) {
+        $path = Format-PsdSegs $segs
+        foreach ($name in $From.AlsoIn) {
+            if (Test-PsdTreePath $Doc.Inc[$name].Tree $segs) { $hint.Add("The include $name has $($path): !<$($name)::$path> reads it.") }
+            else { $hint.Add("The include $name has $($segs[0].Key) too, but not $path.") }
+        }
+        $hint.Add("Without name::, $($segs[0].Key) is read from this file and its merge chain because they have it, and the includes aren't looked at.")
+    }
+    New-PsdMiss 'PSD301' $msg $Rel ($seg.End - $seg.Start) $hint.ToArray() $Op
+}
+
+# The child of a tree node for one step of a path, or $null. Resolves nothing.
+function Get-PsdTreeChild {
+    param($Node, $Seg)
+    if ($Seg.IsIndex) {
+        if ($Node.K -ne 'L') { return $null }
+        $i = $Seg.Index
+        if ($i -lt 0) { $i += $Node.V.Count }
+        if ($i -ge 0 -and $i -lt $Node.V.Count) { return $Node.V[$i] }
+        return $null
+    }
+    if ($Node.K -eq 'M' -and $Node.V.Contains($Seg.Key)) { return $Node.V[$Seg.Key] }
+    $null
+}
+
 function Test-PsdTreePath {
     param($Tree, $Segs)
     $cur = $Tree
     foreach ($seg in $Segs) {
         if ($null -eq $cur) { return $false }
-        if ($seg.IsIndex) {
-            if ($cur.K -ne 'L') { return $false }
-            $i = $seg.Index
-            if ($i -lt 0) { $i += $cur.V.Count }
-            if ($i -lt 0 -or $i -ge $cur.V.Count) { return $false }
-            $cur = $cur.V[$i]
-            continue
-        }
-        if ($cur.K -ne 'M' -or -not $cur.V.Contains($seg.Key)) { return $false }
-        $cur = $cur.V[$seg.Key]
+        $cur = Get-PsdTreeChild $cur $seg
     }
-    $true
+    $null -ne $cur
 }
 
 # Notes, for -Verbose, that a reference without name:: read a key of this file that includes have too: where the
@@ -466,8 +437,7 @@ function Resolve-PsdOp {
     if ($null -ne $Node.Base) { $base = Get-PsdNodeValue $Node.Base $Doc }
     $arg = Get-PsdNodeValue $Node.Arg $Doc
     $shown = $Node.Path
-    $argItems = New-PsdList
-    if (Test-PsdList $arg) { foreach ($x in $arg) { $argItems.Add($x) } } else { $argItems.Add($arg) }
+    $argItems = Get-PsdItems $arg
     $err = {
         param($code, $msg)
         Add-PsdError $ctx $code $msg -File $Node.File -Line $Node.Line -Column $Node.Col -Length $Node.KeyLen -Key $Node.Path
@@ -483,22 +453,16 @@ function Resolve-PsdOp {
         }
         return , $out
     }
-    $items = New-PsdList
-    if (Test-PsdList $base) { foreach ($x in $base) { $items.Add($x) } }
-    elseif ($null -ne $base) {
+    if ($null -ne $base -and -not (Test-PsdList $base)) {
         & $err 'PSD210' "$($Node.Op) only works on lists, but $shown is $(Get-PsdKindText $base)."
         return , $base
     }
+    $items = New-PsdList
+    foreach ($x in $base) { $items.Add($x) }
     switch ($Node.Op) {
         '+=' { foreach ($a in $argItems) { $items.Add($a) } }
-        '=+' { $new = New-PsdList; foreach ($a in $argItems) { $new.Add($a) }; foreach ($x in $items) { $new.Add($x) }; $items = $new }
-        '|=' {
-            foreach ($a in $argItems) {
-                $there = $false
-                foreach ($x in $items) { if (Test-PsdEqual $x $a) { $there = $true; break } }
-                if (-not $there) { $items.Add($a) }
-            }
-        }
+        '=+' { foreach ($x in $items) { $argItems.Add($x) }; $items = $argItems }
+        '|=' { foreach ($a in $argItems) { if (-not (Test-PsdListHas $items $a)) { $items.Add($a) } } }
         '-=' {
             foreach ($a in $argItems) {
                 $kept = New-PsdList

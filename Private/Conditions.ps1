@@ -46,17 +46,16 @@ function Compare-PsdCondValues {
     $ctx = $Ev.Doc.Ctx
     $op = $Cond.Op
     $bad = {
-        param($msg)
-        Add-PsdNodeError $ctx 'PSD402' $msg $Ev.Node $Cond.Start ($Cond.End - $Cond.Start)
+        param($msg, $code = 'PSD402')
+        Add-PsdNodeError $ctx $code $msg $Ev.Node $Cond.Start ($Cond.End - $Cond.Start)
         $false
     }
     switch ($op) {
         '-eq' { return (Test-PsdCondEqual $L $R) }
         '-ne' { return (-not (Test-PsdCondEqual $L $R)) }
         '-in' {
-            $items = Get-PsdItems $R
             if ($R -is [System.Collections.IDictionary]) { return (& $bad "-in needs a list on the right, but it's a map.") }
-            foreach ($x in $items) { if (Test-PsdCondEqual $L $x) { return $true } }
+            foreach ($x in (Get-PsdItems $R)) { if (Test-PsdCondEqual $L $x) { return $true } }
             return $false
         }
     }
@@ -67,23 +66,11 @@ function Compare-PsdCondValues {
         '-like' { return ((Format-PsdScalarText $L) -like (Format-PsdScalarText $R)) }
         '-match' {
             try { $rx = New-PsdRegex (Format-PsdScalarText $R) $ctx }
-            catch {
-                Add-PsdNodeError $ctx 'PSD403' "$(Format-PsdValueShort $R) isn't a valid regex: $($_.Exception.InnerException.Message)" $Ev.Node $Cond.Start ($Cond.End - $Cond.Start)
-                return $false
-            }
+            catch { return (& $bad "$(Format-PsdValueShort $R) isn't a valid regex: $($_.Exception.InnerException.Message)" 'PSD403') }
             try { return $rx.IsMatch((Format-PsdScalarText $L)) }
             catch [System.Text.RegularExpressions.RegexMatchTimeoutException] {
-                $loc = Get-PsdNodeLoc $Ev.Node
-                Add-PsdLimitError $ctx 'RegexTimeout' "by the regex in this condition" $loc.File $loc.Line $loc.Col
+                Add-PsdLimitError $ctx 'RegexTimeout' 'by the regex in this condition' $Ev.Node
                 return $false
-            }
-            catch {
-                if ($_.Exception.InnerException -is [System.Text.RegularExpressions.RegexMatchTimeoutException]) {
-                    $loc = Get-PsdNodeLoc $Ev.Node
-                    Add-PsdLimitError $ctx 'RegexTimeout' "by the regex in this condition" $loc.File $loc.Line $loc.Col
-                    return $false
-                }
-                throw
             }
         }
     }

@@ -1,10 +1,15 @@
 # Walking a path through plain objects: maps, lists and objects with properties.
 
+function Test-PsdKeySame {
+    param([string] $A, [string] $B, [bool] $CaseSensitive)
+    if ($CaseSensitive) { return [string]::Equals($A, $B, [System.StringComparison]::Ordinal) }
+    [string]::Equals($A, $B, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Find-PsdKeyIn {
     param($Dict, [string] $Key, [bool] $CaseSensitive)
     foreach ($k in $Dict.PSBase.Keys) {
-        if ($CaseSensitive) { if ([string]::Equals([string]$k, $Key, [System.StringComparison]::Ordinal)) { return @{ Found = $true; Key = $k } } }
-        elseif ([string]::Equals([string]$k, $Key, [System.StringComparison]::OrdinalIgnoreCase)) { return @{ Found = $true; Key = $k } }
+        if (Test-PsdKeySame $k $Key $CaseSensitive) { return @{ Found = $true; Key = $k } }
     }
     @{ Found = $false; Key = $null }
 }
@@ -23,14 +28,12 @@ function Get-PsdObjectChild {
     param($Value, $Seg, [bool] $CaseSensitive, [string] $Under)
     $kind = Get-PsdObjectKind $Value
     $what = if ($Under) { $Under } else { 'the object' }
+    $missing = if ($Under) { "'$($Seg.Key)' doesn't exist under $Under." } else { "'$($Seg.Key)' doesn't exist." }
     switch ($kind) {
         'map' {
             if ($Seg.IsIndex) { return @{ Found = $false; Code = 'PSD308'; Message = "$what is a map, so [$($Seg.Index)] can't be used on it." } }
             $r = Find-PsdKeyIn $Value $Seg.Key $CaseSensitive
-            if (-not $r.Found) {
-                $m = if ($Under) { "'$($Seg.Key)' doesn't exist under $Under." } else { "'$($Seg.Key)' doesn't exist." }
-                return @{ Found = $false; Code = 'PSD301'; Message = $m; Keys = $Value.PSBase.Keys }
-            }
+            if (-not $r.Found) { return @{ Found = $false; Code = 'PSD301'; Message = $missing; Keys = $Value.PSBase.Keys } }
             return @{ Found = $true; Value = $Value[$r.Key]; Key = $r.Key }
         }
         'list' {
@@ -43,11 +46,9 @@ function Get-PsdObjectChild {
         'object' {
             if ($Seg.IsIndex) { return @{ Found = $false; Code = 'PSD308'; Message = "$what isn't a list, so [$($Seg.Index)] can't be used on it." } }
             foreach ($p in $Value.PSObject.Properties) {
-                $same = if ($CaseSensitive) { [string]::Equals($p.Name, $Seg.Key, [System.StringComparison]::Ordinal) } else { $p.Name -ieq $Seg.Key }
-                if ($same) { return @{ Found = $true; Value = $p.Value; Key = $p.Name } }
+                if (Test-PsdKeySame $p.Name $Seg.Key $CaseSensitive) { return @{ Found = $true; Value = $p.Value; Key = $p.Name } }
             }
-            $m = if ($Under) { "'$($Seg.Key)' doesn't exist under $Under." } else { "'$($Seg.Key)' doesn't exist." }
-            return @{ Found = $false; Code = 'PSD301'; Message = $m; Keys = @($Value.PSObject.Properties | ForEach-Object Name) }
+            return @{ Found = $false; Code = 'PSD301'; Message = $missing; Keys = @($Value.PSObject.Properties | ForEach-Object Name) }
         }
         'null' { return @{ Found = $false; Code = 'PSD301'; Message = "$what is `$null, so nothing can be read from it." } }
     }
@@ -67,9 +68,7 @@ function Find-PsdObjectPath {
 
 function Set-PsdObjectChild {
     param($Container, $Key, $Value)
-    $kind = Get-PsdObjectKind $Container
-    if ($kind -eq 'map') { $Container[$Key] = $Value; return }
-    if ($kind -eq 'list') { $Container[$Key] = $Value; return }
+    if ((Get-PsdObjectKind $Container) -in 'map', 'list') { $Container[$Key] = $Value; return }
     $p = $Container.PSObject.Properties[[string]$Key]
     if ($p) { $p.Value = $Value } else { $Container | Add-Member -NotePropertyName ([string]$Key) -NotePropertyValue $Value }
 }
@@ -112,8 +111,7 @@ function Set-PsdObjectPath {
 # Removes a value. Lists that can't shrink are replaced by a shorter copy.
 function Remove-PsdObjectPath {
     param($Object, $Segs)
-    $parentSegs = New-PsdList
-    for ($i = 0; $i -lt $Segs.Count - 1; $i++) { $parentSegs.Add($Segs[$i]) }
+    $parentSegs = $Segs.GetRange(0, $Segs.Count - 1)
     $p = Find-PsdObjectPath $Object $parentSegs
     if (-not $p.Found) { return $p }
     $parent = $p.Value

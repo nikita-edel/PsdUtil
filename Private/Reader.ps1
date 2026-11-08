@@ -76,7 +76,7 @@ function Get-PsdSourcePos {
         $pos = $text.IndexOf("`n") + 1
         $pos += $ValueIndex
     }
-    elseif ($text.Length -gt 0 -and "'`"".IndexOf($text[0]) -ge 0 -or ($text.Length -gt 0 -and [int]$text[0] -ge 0x2018 -and [int]$text[0] -le 0x201E)) {
+    elseif ("'`"".IndexOf($text[0]) -ge 0 -or ([int]$text[0] -ge 0x2018 -and [int]$text[0] -le 0x201E)) {
         $double = ($text[0] -eq '"') -or ([int]$text[0] -ge 0x201C)
         $pos = 1
         $vi = 0
@@ -117,6 +117,18 @@ function Add-PsdNodeError {
     Add-PsdError $Ctx $Code $Message -File $loc.File -Line $loc.Line -Column $loc.Col -Length $loc.Len -Key $key -Hint $Hint -Extra $Extra
 }
 
+# An error at the first line of some parsed text.
+function Add-PsdExtentError {
+    param($Ctx, [string] $Code, [string] $Message, $File, $Extent)
+    Add-PsdError $Ctx $Code $Message -File $File -Line $Extent.StartLineNumber -Column $Extent.StartColumnNumber -Length (($Extent.Text -split '\r?\n')[0].Length)
+}
+
+# An error at a key of a map.
+function Add-PsdKeyError {
+    param($Ctx, [string] $Code, [string] $Message, $KInfo, [string] $Key = $null, [string[]] $Hint = @())
+    Add-PsdError $Ctx $Code $Message -File $KInfo.File -Line $KInfo.Line -Column $KInfo.Col -Length $KInfo.Len -Key $Key -Hint $Hint
+}
+
 # --- Reading files --------------------------------------------------------------
 
 function Read-PsdFile {
@@ -125,8 +137,7 @@ function Read-PsdFile {
     $key = Get-PsdPathKey $full
     if ($Ctx.Files.ContainsKey($key)) { return $Ctx.Files[$key] }
     if (-not [IO.File]::Exists($full)) {
-        $msg = "the file $full doesn't exist."
-        if ($From) { Add-PsdNodeError $Ctx $Code $msg $From } else { Add-PsdError $Ctx $Code $msg }
+        Add-PsdNodeError $Ctx $Code "the file $full doesn't exist." $From
         return $null
     }
     if ($Ctx.Files.Count -ge $Ctx.Limits.MaxFiles) {
@@ -136,9 +147,7 @@ function Read-PsdFile {
     $ext = [IO.Path]::GetExtension($full)
     if ($ext -ine '.psd1' -and $null -ne $Ctx.Loader) { return (Read-PsdLoadedFile $full $Ctx $From) }
     if ($ext -ieq '.ps1') {
-        $msg = "$full is a script, and PsdUtil runs no code."
-        $hint = @('Pass -Loader { param($Path) & $Path } to read scripts, or write the file as .psd1.')
-        if ($From) { Add-PsdNodeError $Ctx 'PSD108' $msg $From -Hint $hint } else { Add-PsdError $Ctx 'PSD108' $msg -Hint $hint }
+        Add-PsdNodeError $Ctx 'PSD108' "$full is a script, and PsdUtil runs no code." $From -Hint @('Pass -Loader { param($Path) & $Path } to read scripts, or write the file as .psd1.')
         return $null
     }
     $info = New-Object IO.FileInfo $full
@@ -151,15 +160,12 @@ function Read-PsdFile {
         Add-PsdError $Ctx 'PSD100' "the file $full can't be read: $($_.Exception.InnerException.Message)"
         return $null
     }
-    $text = $null
     if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $text = [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2) }
     elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $text = [Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2) }
     else {
-        $enc = New-Object System.Text.UTF8Encoding $false, $true
-        try { $text = $enc.GetString($bytes) }
+        try { $text = (New-Object System.Text.UTF8Encoding $false, $true).GetString($bytes) }
         catch {
-            $rec = New-PsdFileRec $full $null
-            Add-PsdError $Ctx 'PSD107' "the file isn't valid UTF-8. Save it as UTF-8." -File $rec
+            Add-PsdError $Ctx 'PSD107' "the file isn't valid UTF-8. Save it as UTF-8." -File (New-PsdFileRec $full $null)
             return $null
         }
         if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
@@ -189,7 +195,7 @@ function Read-PsdLoadedFile {
         return $rec
     }
     $value = $out[0]
-    if (-not ($value -is [System.Collections.IDictionary] -or $value -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $value))) {
+    if (-not (Test-PsdMapLike $value)) {
         & $fail "-Loader has to give a map for $Full, but it gave $(Get-PsdKindText $value)."
         return $rec
     }
@@ -205,15 +211,10 @@ function ConvertFrom-PsdText {
     $ast = [Parser]::ParseInput($Text, $Full, [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) {
         foreach ($e in $errors) {
-            $x = $e.Extent
             if ($e.ErrorId -eq 'DuplicateKeyInHashLiteral') {
-                Add-PsdError $Ctx 'PSD102' "the key $($x.Text) is there twice in one map. Keys ignore case, so 'a' and 'A' count as the same key." `
-                    -File $rec -Line $x.StartLineNumber -Column $x.StartColumnNumber -Length $x.Text.Length
+                Add-PsdExtentError $Ctx 'PSD102' "the key $($e.Extent.Text) is there twice in one map. Keys ignore case, so 'a' and 'A' count as the same key." $rec $e.Extent
             }
-            else {
-                $msg = $e.Message.TrimEnd('.')
-                Add-PsdError $Ctx 'PSD101' "PowerShell can't read this: $msg." -File $rec -Line $x.StartLineNumber -Column $x.StartColumnNumber -Length ([Math]::Max(1, $x.Text.Length))
-            }
+            else { Add-PsdExtentError $Ctx 'PSD101' "PowerShell can't read this: $($e.Message.TrimEnd('.'))." $rec $e.Extent }
         }
         return $rec
     }
@@ -229,13 +230,11 @@ function ConvertFrom-PsdText {
     }
     $expr = Get-PsdStatementExpression $stmts[0]
     if ($expr -isnot [HashtableAst]) {
-        $x = $stmts[0].Extent
-        Add-PsdError $Ctx 'PSD103' 'a data file has to be one map: @{ ... }' -File $rec -Line $x.StartLineNumber -Column $x.StartColumnNumber -Length (($x.Text -split '\r?\n')[0].Length)
+        Add-PsdExtentError $Ctx 'PSD103' 'a data file has to be one map: @{ ... }' $rec $stmts[0].Extent
         return $rec
     }
     if ($stmts.Count -gt 1) {
-        $x = $stmts[1].Extent
-        Add-PsdError $Ctx 'PSD104' 'there is something after the map. A data file is exactly one @{ ... }' -File $rec -Line $x.StartLineNumber -Column $x.StartColumnNumber -Length (($x.Text -split '\r?\n')[0].Length)
+        Add-PsdExtentError $Ctx 'PSD104' 'there is something after the map. A data file is exactly one @{ ... }' $rec $stmts[1].Extent
         return $rec
     }
     $rec.Root = ConvertFrom-PsdHashAst $expr $rec $Ctx '' 0 $true $false
@@ -265,8 +264,7 @@ function Get-PsdRejectText {
 
 function Add-PsdReject {
     param($Ast, $File, $Ctx)
-    $x = $Ast.Extent
-    Add-PsdError $Ctx 'PSD105' (Get-PsdRejectText $Ast) -File $File -Line $x.StartLineNumber -Column $x.StartColumnNumber -Length (($x.Text -split '\r?\n')[0].Length)
+    Add-PsdExtentError $Ctx 'PSD105' (Get-PsdRejectText $Ast) $File $Ast.Extent
 }
 
 function New-PsdStringNode {
@@ -275,9 +273,7 @@ function New-PsdStringNode {
     if ($Value.IndexOf('!<') -lt 0) { return $node }
     try { $tpl = ConvertFrom-PsdTemplate $Value }
     catch [System.FormatException] {
-        $pos = [int]$_.Exception.Data['PsdPos']
-        $len = [int]$_.Exception.Data['PsdLen']
-        Add-PsdNodeError $Ctx 'PSD300' $_.Exception.Message $node $pos $len
+        Add-PsdNodeError $Ctx 'PSD300' $_.Exception.Message $node ([int]$_.Exception.Data['PsdPos']) ([int]$_.Exception.Data['PsdLen'])
         return $node
     }
     if (-not $tpl.HasRef) {
@@ -292,27 +288,18 @@ function New-PsdStringNode {
 function ConvertFrom-PsdAst {
     param($Ast, $File, $Ctx, [string] $Path, [int] $Depth, [bool] $InIf)
     if ($Depth -gt $Ctx.Limits.MaxDepth) {
-        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $File $Ast.Extent.StartLineNumber $Ast.Extent.StartColumnNumber
-        return (New-PsdNode 'S' $null $File $Ast $Path)
+        $deep = New-PsdNode 'S' $null $File $Ast $Path
+        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $deep
+        return $deep
     }
     if ($Ast -is [HashtableAst]) { return (ConvertFrom-PsdHashAst $Ast $File $Ctx $Path $Depth $false $InIf) }
     if ($Ast -is [ArrayExpressionAst] -or $Ast -is [ArrayLiteralAst]) {
         $items = New-PsdList
-        $exprs = New-PsdList
-        if ($Ast -is [ArrayLiteralAst]) { foreach ($x in $Ast.Elements) { $exprs.Add($x) } }
-        else {
-            foreach ($st in $Ast.SubExpression.Statements) {
-                $e = Get-PsdStatementExpression $st
-                if ($null -eq $e) { Add-PsdReject $st $File $Ctx; continue }
-                if ($e -is [ArrayLiteralAst]) { foreach ($x in $e.Elements) { $exprs.Add($x) } }
-                else { $exprs.Add($e) }
-            }
-        }
-        foreach ($e in $exprs) {
-            if ($Ast -is [ArrayExpressionAst] -and $e -is [ArrayExpressionAst] -and $Ast.SubExpression.Statements.Count -eq 1) {
-                # @(@(1, 2)) is one flat list in PowerShell.
-                $inner = ConvertFrom-PsdAst $e $File $Ctx $Path ($Depth + 1) $InIf
-                foreach ($x in $inner.V) { $items.Add($x) }
+        # @(@(1, 2)) is one flat list in PowerShell.
+        $flat = $Ast -is [ArrayExpressionAst] -and $Ast.SubExpression.Statements.Count -eq 1
+        foreach ($e in (Get-PsdArrayElements $Ast { param($st) Add-PsdReject $st $File $Ctx })) {
+            if ($flat -and $e -is [ArrayExpressionAst]) {
+                foreach ($x in (ConvertFrom-PsdAst $e $File $Ctx $Path ($Depth + 1) $InIf).V) { $items.Add($x) }
                 continue
             }
             $items.Add((ConvertFrom-PsdAst $e $File $Ctx (Join-PsdPath $Path ([int]$items.Count)) ($Depth + 1) $InIf))
@@ -320,16 +307,13 @@ function ConvertFrom-PsdAst {
         return (New-PsdNode 'L' $items $File $Ast $Path)
     }
     if ($Ast -is [StringConstantExpressionAst]) {
-        if ($Ast.StringConstantType -eq [StringConstantType]::BareWord) { Add-PsdReject $Ast $File $Ctx; return (New-PsdNode 'S' $null $File $Ast $Path) }
-        return (New-PsdStringNode $Ast.Value $File $Ast $Path $Ctx)
+        if ($Ast.StringConstantType -ne [StringConstantType]::BareWord) { return (New-PsdStringNode $Ast.Value $File $Ast $Path $Ctx) }
     }
-    if ($Ast -is [ExpandableStringExpressionAst]) {
+    elseif ($Ast -is [ExpandableStringExpressionAst]) {
         if ($Ast.NestedExpressions.Count -eq 0) { return (New-PsdStringNode $Ast.Value $File $Ast $Path $Ctx) }
-        Add-PsdReject $Ast $File $Ctx
-        return (New-PsdNode 'S' $null $File $Ast $Path)
     }
-    if ($Ast -is [ConstantExpressionAst]) { return (New-PsdNode 'S' $Ast.Value $File $Ast $Path) }
-    if ($Ast -is [VariableExpressionAst]) {
+    elseif ($Ast -is [ConstantExpressionAst]) { return (New-PsdNode 'S' $Ast.Value $File $Ast $Path) }
+    elseif ($Ast -is [VariableExpressionAst]) {
         switch ($Ast.VariablePath.UserPath.ToLowerInvariant()) {
             'true' { return (New-PsdNode 'S' $true $File $Ast $Path) }
             'false' { return (New-PsdNode 'S' $false $File $Ast $Path) }
@@ -348,15 +332,14 @@ function ConvertFrom-PsdHashAst {
         $kx = $keyAst.Extent
         $kinfo = @{ Line = $kx.StartLineNumber; Col = $kx.StartColumnNumber; Len = $kx.Text.Length; Text = $kx.Text; File = $File }
         if ($keyAst -isnot [StringConstantExpressionAst]) {
-            Add-PsdError $Ctx 'PSD106' "keys have to be text. Put this key in quotes: '$($kx.Text)'." -File $File -Line $kinfo.Line -Column $kinfo.Col -Length $kinfo.Len
+            Add-PsdKeyError $Ctx 'PSD106' "keys have to be text. Put this key in quotes: '$($kx.Text)'." $kinfo
             continue
         }
         $kc = Get-PsdKeyClass ([string]$keyAst.Value) $kinfo $Ctx
         if ($kc.Kind -eq 'Bad') { continue }
         $valueAst = Get-PsdStatementExpression $pair.Item2
         if ($null -eq $valueAst) { Add-PsdReject $pair.Item2 $File $Ctx; continue }
-        $childPath = $Path
-        if ($kc.Kind -eq 'Plain' -or $kc.Kind -eq 'Op') { $childPath = Join-PsdPath $Path $kc.Name }
+        $childPath = if ($kc.Kind -in 'Plain', 'Op') { Join-PsdPath $Path $kc.Name } else { $Path }
         $value = ConvertFrom-PsdAst $valueAst $File $Ctx $childPath ($Depth + 1) ($InIf -or $kc.Kind -eq 'If')
         Add-PsdMapEntry $node $kc $value $File $Ctx $IsRoot $InIf
     }
@@ -371,7 +354,7 @@ function Get-PsdKeyClass {
     $kc = @{ Kind = 'Plain'; Name = $Key; Op = $null; Cond = $null; CondOffset = 0; Info = $KInfo }
     $err = {
         param($code, $msg, [string[]]$hint)
-        Add-PsdError $Ctx $code $msg -File $KInfo.File -Line $KInfo.Line -Column $KInfo.Col -Length $KInfo.Len -Key $Key -Hint $hint
+        Add-PsdKeyError $Ctx $code $msg $KInfo $Key $hint
         $kc.Kind = 'Bad'
     }
     $name = $Key
@@ -426,25 +409,23 @@ function Add-PsdMapEntry {
                 Offset = $Kc.CondOffset; Path = $Node.Path; Raw = $Kc.Cond; K = 'I'
             }
             if ($InIf) {
-                Add-PsdError $Ctx 'PSD206' "an !if can't contain another !if. Join the conditions with -and instead." -File $File -Line $ki.Line -Column $ki.Col -Length $ki.Len
+                Add-PsdKeyError $Ctx 'PSD206' "an !if can't contain another !if. Join the conditions with -and instead." $ki
                 return
             }
             if ($Value.K -ne 'M') {
-                Add-PsdError $Ctx 'PSD206' "an !if needs a map after it: '$($Kc.Cond)' = @{ ... }" -File $File -Line $ki.Line -Column $ki.Col -Length $ki.Len
+                Add-PsdKeyError $Ctx 'PSD206' "an !if needs a map after it: '$($Kc.Cond)' = @{ ... }" $ki
                 return
             }
             try { $ifNode.Cond = ConvertFrom-PsdCondition $Kc.Cond }
             catch [System.FormatException] {
-                $pos = [int]$_.Exception.Data['PsdPos']
-                $len = [int]$_.Exception.Data['PsdLen']
-                Add-PsdNodeError $Ctx 'PSD400' $_.Exception.Message $ifNode $pos $len
+                Add-PsdNodeError $Ctx 'PSD400' $_.Exception.Message $ifNode ([int]$_.Exception.Data['PsdPos']) ([int]$_.Exception.Data['PsdLen'])
                 return
             }
             $Node.Ifs.Add($ifNode)
         }
         'Dir' {
             if (-not $IsRoot) {
-                Add-PsdError $Ctx 'PSD206' "'$($Kc.Name)' only works at the top level of a file." -File $File -Line $ki.Line -Column $ki.Col -Length $ki.Len
+                Add-PsdKeyError $Ctx 'PSD206' "'$($Kc.Name)' only works at the top level of a file." $ki
                 return
             }
             Read-PsdDirective $File $Kc.Name $Value $ki $Ctx
@@ -452,47 +433,51 @@ function Add-PsdMapEntry {
     }
 }
 
+# The item nodes of a list node, or the node itself: what a value that can be one or many holds.
+function Get-PsdNodeItems {
+    param($Node)
+    if ($Node.K -eq 'L') { $Node.V } else { $Node }
+}
+
 function Get-PsdPathStrings {
     param($Value, [string] $Directive, $Ctx, [string] $Shape)
     $out = New-PsdList
-    $items = Get-PsdItems $Value
-    if ($Value.K -eq 'L') { $items = Get-PsdItems $Value.V }
-    foreach ($it in $items) {
-        if ($it.K -eq 'S' -and $it.V -is [string] -and $it.V.Length -gt 0) { $out.Add(@{ Path = $it.V; Only = $null; Node = $it }); continue }
-        if ($it.K -eq 'T') { Add-PsdNodeError $Ctx 'PSD206' "paths in '$Directive' can't contain references." $it; continue }
-        if ($Directive -eq '!merge' -and $it.K -eq 'M') {
-            $ok = $true
-            foreach ($k in $it.V.PSBase.Keys) {
-                if ($k -ne 'Path' -and $k -ne 'Keys') {
-                    Add-PsdNodeError $Ctx 'PSD206' "'$k' doesn't belong here. '!merge' takes @{ Path = '...'; Keys = 'A', 'B' }." $it.V[$k]
-                    $ok = $false
-                }
-            }
-            $p = $it.V['Path']
-            if ($null -eq $p -or $p.K -ne 'S' -or $p.V -isnot [string]) {
-                Add-PsdNodeError $Ctx 'PSD206' "this needs a Path: @{ Path = './file.psd1'; Keys = 'A' }." $it
-                continue
-            }
-            $keys = New-PsdList
-            $kn = $it.V['Keys']
-            if ($kn) {
-                $kitems = Get-PsdItems $kn
-                if ($kn.K -eq 'L') { $kitems = Get-PsdItems $kn.V }
-                foreach ($x in $kitems) {
-                    if ($x.K -eq 'S' -and $x.V -is [string]) { $keys.Add($x.V) }
-                    else { Add-PsdNodeError $Ctx 'PSD206' 'Keys has to be a key name or a list of key names.' $x; $ok = $false }
-                }
-            }
-            if ($ok) {
-                $kl = $null
-                if ($kn) { $kl = $keys }
-                $out.Add(@{ Path = $p.V; Only = $kl; Node = $it })
-            }
-            continue
+    foreach ($it in (Get-PsdNodeItems $Value)) {
+        if ($it.K -eq 'S' -and $it.V -is [string] -and $it.V.Length -gt 0) { $out.Add(@{ Path = $it.V; Only = $null; Node = $it }) }
+        elseif ($it.K -eq 'T') { Add-PsdNodeError $Ctx 'PSD206' "paths in '$Directive' can't contain references." $it }
+        elseif ($Directive -eq '!merge' -and $it.K -eq 'M') {
+            $spec = Read-PsdMergeMap $it $Ctx
+            if ($spec) { $out.Add($spec) }
         }
-        Add-PsdNodeError $Ctx 'PSD206' "'$Directive' takes $Shape." $it
+        else { Add-PsdNodeError $Ctx 'PSD206' "'$Directive' takes $Shape." $it }
     }
     , $out
+}
+
+# '!merge' = @{ Path = '...'; Keys = 'A', 'B' } as a path entry, or $null when something is wrong with it.
+function Read-PsdMergeMap {
+    param($Item, $Ctx)
+    $ok = $true
+    foreach ($k in $Item.V.PSBase.Keys) {
+        if ($k -notin 'Path', 'Keys') {
+            Add-PsdNodeError $Ctx 'PSD206' "'$k' doesn't belong here. '!merge' takes @{ Path = '...'; Keys = 'A', 'B' }." $Item.V[$k]
+            $ok = $false
+        }
+    }
+    $p = $Item.V['Path']
+    if ($null -eq $p -or $p.K -ne 'S' -or $p.V -isnot [string]) {
+        Add-PsdNodeError $Ctx 'PSD206' "this needs a Path: @{ Path = './file.psd1'; Keys = 'A' }." $Item
+        return $null
+    }
+    $keys = $null
+    if ($Item.V['Keys']) {
+        $keys = New-PsdList
+        foreach ($x in (Get-PsdNodeItems $Item.V['Keys'])) {
+            if ($x.K -eq 'S' -and $x.V -is [string]) { $keys.Add($x.V) }
+            else { Add-PsdNodeError $Ctx 'PSD206' 'Keys has to be a key name or a list of key names.' $x; $ok = $false }
+        }
+    }
+    if ($ok) { @{ Path = $p.V; Only = $keys; Node = $Item } }
 }
 
 function Read-PsdDirective {
@@ -506,7 +491,7 @@ function Read-PsdDirective {
         }
         '!types' {
             if (-not $Ctx.SchemaMode) {
-                Add-PsdError $Ctx 'PSD205' "'!types' only works in a schema file." -File $File -Line $KInfo.Line -Column $KInfo.Col -Length $KInfo.Len
+                Add-PsdKeyError $Ctx 'PSD205' "'!types' only works in a schema file." $KInfo
                 return
             }
             foreach ($x in (Get-PsdPathStrings $Value '!types' $Ctx 'a path or a list of paths to .psm1 files')) { $File.Types.Add($x) }
@@ -516,7 +501,7 @@ function Read-PsdDirective {
             $File.Schema = @{ Path = $Value.V; Node = $Value }
         }
         '!name' {
-            if ($Value.K -ne 'S' -or $Value.V -isnot [string] -or $Value.V -notmatch '^[^\s"<>|?()\[\],:@!]+$') {
+            if ($Value.K -ne 'S' -or $Value.V -isnot [string] -or -not $script:PsdRxFileName.IsMatch($Value.V)) {
                 Add-PsdNodeError $Ctx 'PSD206' "'!name' takes a name without spaces or signs like :, @ or !." $Value
                 return
             }
@@ -563,8 +548,9 @@ function Get-PsdKeptMap {
 function ConvertFrom-PsdObject {
     param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName, [switch] $AllowDirective)
     if ($Depth -gt $Ctx.Limits.MaxDepth) {
-        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $File
-        return (New-PsdNode 'S' $null $File $null $Path)
+        $deep = New-PsdNode 'S' $null $File $null $Path
+        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $deep
+        return $deep
     }
     if ($null -eq $Value) { return (New-PsdNode 'S' $null $File $null $Path) }
     if ($Value -is [System.Collections.IDictionary]) {
@@ -573,19 +559,11 @@ function ConvertFrom-PsdObject {
             $kinfo = @{ Line = 0; Col = 0; Len = 0; Text = [string]$k; File = $File }
             $kc = Get-PsdKeyClass ([string]$k) $kinfo $Ctx
             if ($kc.Kind -eq 'Bad') { continue }
-            $childPath = $Path
-            if ($kc.Kind -eq 'Plain' -or $kc.Kind -eq 'Op') { $childPath = Join-PsdPath $Path $kc.Name }
+            $childPath = if ($kc.Kind -in 'Plain', 'Op') { Join-PsdPath $Path $kc.Name } else { $Path }
             $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1)
             if ($kc.Kind -eq 'Dir') {
-                if ($AllowDirective -and $Depth -eq 0) {
-                    Read-PsdDirective $File $kc.Name $child $kinfo $Ctx
-                    continue
-                }
-                if ($AllowName -and $Depth -eq 0 -and $kc.Name -eq '!name') {
-                    Read-PsdDirective $File '!name' $child $kinfo $Ctx
-                    continue
-                }
-                Add-PsdError $Ctx 'PSD206' "'$($kc.Name)' only works in files." -File $File -Key ([string]$k)
+                if ($Depth -eq 0 -and ($AllowDirective -or ($AllowName -and $kc.Name -eq '!name'))) { Read-PsdDirective $File $kc.Name $child $kinfo $Ctx }
+                else { Add-PsdError $Ctx 'PSD206' "'$($kc.Name)' only works in files." -File $File -Key ([string]$k) }
                 continue
             }
             Add-PsdMapEntry $node $kc $child $File $Ctx $false $false
