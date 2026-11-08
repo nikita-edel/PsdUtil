@@ -1,0 +1,122 @@
+Real error output, made by changing one line in a copy of the files in config/.
+Each heading says what was changed.
+
+
+--- A typo in a reference ------------------------------------------------------
+
+last.psd1, line 13: 'Prot' doesn't exist under Server in base.psd1.
+
+    BasePort = '!<base::Server.Prot>'         # base's own value, before merging
+                               ^^^^
+    Did you mean 'Port'?                                            [PSD301]
+
+
+--- A typo in a file name ------------------------------------------------------
+
+last.psd1, line 11: there is no file called 'monitring' in this chain or its includes.
+
+    Metrics  = '!<monitring::Endpoint>'
+                  ^^^^^^^^^
+    Did you mean 'monitoring'?
+    You can use: this, base, extra, last, next, monitoring, shared  [PSD302]
+
+
+--- A value that depends on itself ---------------------------------------------
+
+last.psd1, line 7: these values depend on each other, so they can't be worked out.
+
+    Server = @{ Host = '!<Server.Url>' }
+                       ^^^^^^^^^^^^^^^
+    Server.Host    line 7         '!<Server.Url>'
+    Server.Url     base.psd1 line 20 'http://!<Server.Host>:!<Server.Port>'
+    ... and back to Server.Host
+    
+    Give one of them a real value.                                  [PSD303]
+
+
+--- Files that merge each other ------------------------------------------------
+
+base.psd1, line 3: these files merge each other in a circle.
+
+    '!merge' = './next.psd1'
+               ^^^^^^^^^^^^^
+    next.psd1 -> base.psd1 -> next.psd1
+    
+    Remove one of the '!merge' lines.                               [PSD201]
+
+
+--- A reference that is never closed -------------------------------------------
+
+base.psd1, line 9: this reference is never closed. Add a > at the end of it.
+
+    Title  = '!<Service.Name'
+              ^^^^^^^^^^^^^^                                        [PSD300]
+
+
+--- A map inside text ----------------------------------------------------------
+
+base.psd1, line 9: shared::Database is a map, so it can't go inside text.
+
+    Title  = 'Db: !<shared::Database>'
+                  ^^^^^^^^^^^^^^^^^^^
+    Use one of its keys or items, or make the reference the whole value.  [PSD306]
+
+
+--- An environment variable that is not set ------------------------------------
+
+base.psd1, line 4: the environment variable APP_STAGE isn't set.
+
+    Stage = '!<env:APP_STAGE>'
+               ^^^^^^^^^^^^^
+    Set it, or add a fallback: !<env:APP_STAGE ?? "...">            [PSD310]
+
+
+--- Schema: number out of range ------------------------------------------------
+
+next.psd1, line 5: Server.Port is 70000, but it has to be between 1 and 65535.
+
+    Server = @{ Port = 70000 }                 # maps deep merge by default, Host is kept
+                       ^^^^^
+    About this key: TCP port.                                       [PSD506]
+
+
+--- Schema: value that is not allowed ------------------------------------------
+
+extra.psd1, line 4: Logging.Level can't be 'Loud'.
+
+    Level = 'Loud'
+            ^^^^^^
+    Allowed values: Debug, Info, Warn                               [PSD504]
+
+
+--- Schema: required key missing -----------------------------------------------
+
+last.psd1: Tags is required, but none of these files set it.
+
+    Looked in: last.psd1, extra.psd1, next.psd1, base.psd1          [PSD502]
+
+
+--- Schema: a typo in a key ----------------------------------------------------
+
+last.psd1, line 14: the schema doesn't have a key called 'Plugns'.
+
+    Plugns   = @('a')
+    ^^^^^^
+    Did you mean 'Plugins'?                                         [PSD503]
+
+
+--- Several problems at once ---------------------------------------------------
+
+extra.psd1, line 4: 'Nope' doesn't exist.
+
+    Level = '!<Nope>'
+               ^^^^
+    Did you mean 'Note'?                                            [PSD301]
+
+last.psd1, line 13: 'Prot' doesn't exist under Server in base.psd1.
+
+    BasePort = '!<base::Server.Prot>'         # base's own value, before merging
+                               ^^^^
+    Did you mean 'Port'?                                            [PSD301]
+
+WARNING: Found 2 problems in last.psd1. Nothing was loaded.
