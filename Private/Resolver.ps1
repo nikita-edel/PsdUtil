@@ -379,7 +379,8 @@ function Get-PsdPathValue {
                 $candidates = @($keys)
                 if ($i -eq 0 -and -not $Op.Ns) {
                     if ($includeKeys.Count -gt 0) { $msg = "'$($seg.Key)' doesn't exist in this file or its includes." }
-                    $candidates += @($includeKeys)
+                    # generic lists: ToArray, @() on them fails
+                    $candidates += $includeKeys.ToArray()
                 }
                 $hint = New-PsdList
                 $dym = Get-PsdDidYouMean $seg.Key $candidates
@@ -452,7 +453,7 @@ function Add-PsdSourceNote {
     $sig = "$where|$path"
     if ($Ctx.NoteSeen.ContainsKey($sig)) { return }
     $Ctx.NoteSeen[$sig] = $true
-    $names = @($AlsoIn)
+    $names = $AlsoIn.ToArray()
     $verb = if ($names.Count -gt 1) { "The includes $($names -join ', ') have" } else { "The include $($names[0]) has" }
     $reads = @($names | ForEach-Object { "!<$($_)::$path>" }) -join ' or '
     $Ctx.Notes.Add("$where!<$path> reads $($first.Key) from this file and its merge chain. $verb $($first.Key) too; $reads reads that one.")
