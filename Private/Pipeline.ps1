@@ -49,6 +49,7 @@ function Invoke-PsdLoad {
         $Override,
         [System.Collections.IDictionary] $Include,
         [System.Collections.IDictionary] $Merge,
+        [scriptblock] $Loader,
         [string] $Unresolved = 'Error',
         [System.Collections.IDictionary] $Limits,
         [switch] $Raw,
@@ -58,6 +59,7 @@ function Invoke-PsdLoad {
     )
     if ($null -eq $Ctx) { $Ctx = New-PsdContext -Limits $Limits -Unresolved $Unresolved }
     $Ctx.SchemaMode = $SchemaMode.IsPresent
+    if ($Loader) { $Ctx.Loader = $Loader }
     $result = @{ Ctx = $Ctx; Doc = $null; Value = $null; Entry = $null }
     if ($PSBoundParameters.ContainsKey('Text')) {
         if (-not $BasePath) { $BasePath = (Get-Location -PSProvider FileSystem).ProviderPath }

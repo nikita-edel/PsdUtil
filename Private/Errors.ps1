@@ -39,6 +39,8 @@ function New-PsdContext {
         # where a value came from when it could have come from more than one place; written with -Verbose
         Notes      = New-Object 'System.Collections.Generic.List[string]'
         NoteSeen   = @{}
+        # -Loader: reads files that aren't .psd1, like .ps1 scripts; PsdUtil itself runs no code
+        Loader     = $null
         Limits     = $l
         Files      = @{}
         Docs       = @{}

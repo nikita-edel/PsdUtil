@@ -9,7 +9,7 @@ function Merge-Psd {
     References are worked out against the merged result.
 
     .PARAMETER InputObject
-    Paths to files, or maps, in order. A generated class works too, if it was made from a map.
+    Paths to files (a .ps1 with -Loader), or maps, in order. A generated class works too, if it was made from a map.
     A map can have '!name' = 'team', to read it as !<team::Key> and to name it in errors.
 
     .PARAMETER Key
@@ -22,6 +22,11 @@ function Merge-Psd {
     Maps from the caller, by name. They work like '!include': read them with !<name::Key>.
     Their keys aren't in the result and the schema doesn't check them.
 
+    .PARAMETER Loader
+    Reads files that aren't .psd1, like .ps1 scripts that return a map or a generated class: a script
+    block that gets the full path and returns the map, for example { param($Path) & $Path }. PsdUtil
+    itself runs no code; without -Loader a .ps1 is error PSD108. What the loader returns is the file:
+    '!merge', '!include', '!name' and '!schema' work in it, with paths relative to its folder.
     .PARAMETER Merge
     Default operators for keys written without one, by key path, for example @{ '**' = '+=' } (every list
     adds to the one below, like 'Key +=') or @{ Tags = '+='; 'Server.*' = '|=' }. * is one key, ** any
@@ -49,12 +54,15 @@ function Merge-Psd {
 
         [System.Collections.IDictionary] $Merge,
 
+        [scriptblock] $Loader,
+
         [ValidateSet('Error', 'Warn', 'Null', 'Keep')]
         [string] $UnresolvedReference = 'Error',
 
         [System.Collections.IDictionary] $Limits
     )
     $ctx = New-PsdContext -Limits $Limits -Unresolved $UnresolvedReference
+    if ($Loader) { $ctx.Loader = $Loader }
     $layers = New-PsdList
     $entry = $null
     $n = 0

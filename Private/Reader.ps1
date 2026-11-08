@@ -133,6 +133,14 @@ function Read-PsdFile {
         Add-PsdLimitError $Ctx 'MaxFiles' "while loading $full"
         return $null
     }
+    $ext = [IO.Path]::GetExtension($full)
+    if ($ext -ine '.psd1' -and $null -ne $Ctx.Loader) { return (Read-PsdLoadedFile $full $Ctx $From) }
+    if ($ext -ieq '.ps1') {
+        $msg = "$full is a script, and PsdUtil runs no code."
+        $hint = @('Pass -Loader { param($Path) & $Path } to read scripts, or write the file as .psd1.')
+        if ($From) { Add-PsdNodeError $Ctx 'PSD108' $msg $From -Hint $hint } else { Add-PsdError $Ctx 'PSD108' $msg -Hint $hint }
+        return $null
+    }
     $info = New-Object IO.FileInfo $full
     if ($info.Length -gt $Ctx.Limits.MaxFileSize) {
         Add-PsdLimitError $Ctx 'MaxFileSize' "by $full, which is $($info.Length) bytes"
@@ -157,6 +165,34 @@ function Read-PsdFile {
         if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
     }
     ConvertFrom-PsdText $text $full $Ctx
+}
+
+# Reads a file through -Loader: what it returns is the file, a map or a generated class made from one. Its
+# directives ('!merge', '!include', '!name', '!schema') work as in a .psd1, paths relative to the file's folder.
+function Read-PsdLoadedFile {
+    param([string] $Full, $Ctx, $From)
+    $rec = New-PsdFileRec $Full $null
+    $Ctx.Files[$rec.Key] = $rec
+    $fail = {
+        param([string] $Message)
+        if ($From) { Add-PsdNodeError $Ctx 'PSD108' $Message $From } else { Add-PsdError $Ctx 'PSD108' $Message -File $rec }
+    }
+    try { $out = @(& $Ctx.Loader $Full | Where-Object { $null -ne $_ }) }
+    catch {
+        & $fail "-Loader couldn't read $($Full): $($_.Exception.Message)"
+        return $rec
+    }
+    if ($out.Count -ne 1) {
+        & $fail "-Loader has to give one map for $Full, but it gave $($out.Count) values."
+        return $rec
+    }
+    $value = $out[0]
+    if (-not ($value -is [System.Collections.IDictionary] -or $value -is [System.Management.Automation.PSCustomObject] -or $null -ne (Get-PsdKeptMap $value))) {
+        & $fail "-Loader has to give a map for $Full, but it gave $(Get-PsdKindText $value)."
+        return $rec
+    }
+    $rec.Root = ConvertFrom-PsdObject $value $rec $Ctx '' -AllowDirective
+    $rec
 }
 
 function ConvertFrom-PsdText {
@@ -520,8 +556,10 @@ function Get-PsdKeptMap {
     $prop.GetValue($Value, $null)
 }
 
+# AllowName: '!name' at the top works, for maps given to Merge-Psd. AllowDirective: every directive at the top
+# works, for files read through -Loader.
 function ConvertFrom-PsdObject {
-    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName)
+    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName, [switch] $AllowDirective)
     if ($Depth -gt $Ctx.Limits.MaxDepth) {
         Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $File
         return (New-PsdNode 'S' $null $File $null $Path)
@@ -537,6 +575,10 @@ function ConvertFrom-PsdObject {
             if ($kc.Kind -eq 'Plain' -or $kc.Kind -eq 'Op') { $childPath = Join-PsdPath $Path $kc.Name }
             $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1)
             if ($kc.Kind -eq 'Dir') {
+                if ($AllowDirective -and $Depth -eq 0) {
+                    Read-PsdDirective $File $kc.Name $child $kinfo $Ctx
+                    continue
+                }
                 if ($AllowName -and $Depth -eq 0 -and $kc.Name -eq '!name') {
                     Read-PsdDirective $File '!name' $child $kinfo $Ctx
                     continue
@@ -557,9 +599,9 @@ function ConvertFrom-PsdObject {
     if ($Value -is [System.Management.Automation.PSCustomObject]) {
         $map = [ordered]@{}
         foreach ($p in $Value.PSObject.Properties) { $map[$p.Name] = $p.Value }
-        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth -AllowName:$AllowName)
+        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective)
     }
     $kept = Get-PsdKeptMap $Value
-    if ($null -ne $kept) { return (ConvertFrom-PsdObject $kept $File $Ctx $Path $Depth -AllowName:$AllowName) }
+    if ($null -ne $kept) { return (ConvertFrom-PsdObject $kept $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective) }
     New-PsdNode 'S' $Value $File $null $Path
 }
