@@ -1,6 +1,6 @@
 @{
     RootModule           = 'PsdUtil.psm1'
-    ModuleVersion        = '0.2.0'
+    ModuleVersion        = '0.3.0'
     CompatiblePSEditions = @('Desktop', 'Core')
     GUID                 = '3b6f0f5e-2a51-4c1e-9d0b-6c2f8a7e4d19'
     Author               = 'Nikita Edel'
