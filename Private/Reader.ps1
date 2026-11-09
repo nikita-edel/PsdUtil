@@ -4,6 +4,8 @@ using namespace System.Management.Automation.Language
 
 $script:PsdRxOp = New-Object regex '^(.*\S) (\+=|=\+|\|=|-=|:=)$'
 $script:PsdRxNearOp = New-Object regex '^(.*\S) ([-+=|:]{1,3})$'
+$script:PsdRxIndexKey = New-Object regex '^(.*\S)\[(-?[0-9]+)\]$'
+$script:PsdRxValueKey = New-Object regex '^(.*\S)\[(?:''((?:[^'']|'''')*)''|"((?:[^"]|"")*)")\]$'
 $script:PsdDirectives = @('!merge', '!include', '!name', '!schema', '!types')
 $script:PsdOperators = @('+=', '=+', '|=', '-=', ':=')
 
@@ -38,7 +40,7 @@ function New-PsdNode {
     param([string] $Kind, $Value, $File, $Ast, [string] $Path)
     $n = @{
         Id = New-PsdId; K = $Kind; V = $Value; File = $File; Line = 0; Col = 0; Text = $null; Path = $Path
-        Parts = $null; Ops = $null; Ifs = $null; Base = $null; Op = $null; Arg = $null; Offset = 0
+        Parts = $null; Ops = $null; Ifs = $null; Base = $null; Op = $null; Arg = $null; Index = $null; Match = $null; Offset = 0
         KeyLine = 0; KeyCol = 0; KeyLen = 0
     }
     if ($Ast) {
@@ -351,7 +353,7 @@ function Get-PsdKeyClass {
     # Ctx is used inside the error script block below.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Ctx')]
     param([string] $Key, $KInfo, $Ctx)
-    $kc = @{ Kind = 'Plain'; Name = $Key; Op = $null; Cond = $null; CondOffset = 0; Info = $KInfo }
+    $kc = @{ Kind = 'Plain'; Name = $Key; Op = $null; Index = $null; Match = $null; Cond = $null; CondOffset = 0; Info = $KInfo }
     $err = {
         param($code, $msg, [string[]]$hint)
         Add-PsdKeyError $Ctx $code $msg $KInfo $Key $hint
@@ -382,6 +384,33 @@ function Get-PsdKeyClass {
         $kc.Kind = 'Op'
         $kc.Name = $m.Groups[1].Value
         $kc.Op = $m.Groups[2].Value
+        # 'X[1] :=' works on one place of the list X. Without an operator, 'X[1]' stays a plain key.
+        $im = $script:PsdRxIndexKey.Match($kc.Name)
+        if ($im.Success) {
+            if ($kc.Op -notin ':=', '-=', '+=') {
+                & $err 'PSD209' "'$($kc.Op)' can't be used with an index." @('With an index: := replaces the item, -= removes it, += inserts before it.')
+                return $kc
+            }
+            $kc.Name = $im.Groups[1].Value
+            $text = $im.Groups[2].Value
+            $index = 0
+            # an index too big for an int is past the end of any list
+            if (-not [int]::TryParse($text, [Globalization.NumberStyles]::AllowLeadingSign, $script:PsdInvariant, [ref]$index)) {
+                $index = if ($text.StartsWith('-')) { [int]::MinValue } else { [int]::MaxValue }
+            }
+            $kc.Index = $index
+            return $kc
+        }
+        # 'X[''b''] :=' works on the items of the list X that equal b.
+        $vm = $script:PsdRxValueKey.Match($kc.Name)
+        if ($vm.Success) {
+            if ($kc.Op -notin ':=', '-=') {
+                & $err 'PSD209' "'$($kc.Op)' can't be used with a value in [ ]." @('With a value: := replaces the items that equal it, -= removes them.')
+                return $kc
+            }
+            $kc.Name = $vm.Groups[1].Value
+            $kc.Match = if ($vm.Groups[2].Success) { $vm.Groups[2].Value.Replace("''", "'") } else { $vm.Groups[3].Value.Replace('""', '"') }
+        }
         return $kc
     }
     $m = $script:PsdRxNearOp.Match($name)
@@ -401,7 +430,7 @@ function Add-PsdMapEntry {
     switch ($Kc.Kind) {
         'Plain' { $Node.V[$Kc.Name] = $Value }
         'Op' {
-            $Node.Ops.Add(@{ Key = $Kc.Name; Op = $Kc.Op; Arg = $Value; File = $File; Line = $ki.Line; Col = $ki.Col; Len = $ki.Len; Text = $ki.Text; Path = (Join-PsdPath $Node.Path $Kc.Name) })
+            $Node.Ops.Add(@{ Key = $Kc.Name; Op = $Kc.Op; Index = $Kc.Index; Match = $Kc.Match; Arg = $Value; File = $File; Line = $ki.Line; Col = $ki.Col; Len = $ki.Len; Text = $ki.Text; Path = (Join-PsdPath $Node.Path $Kc.Name) })
         }
         'If' {
             $ifNode = @{
