@@ -12,12 +12,11 @@ function Read-PsdRawFile {
     }
     $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     # Strict: bytes that aren't UTF-8 would be replaced when read, and the damage written back.
-    try { $text = (New-Object System.Text.UTF8Encoding $false, $true).GetString($bytes) }
-    catch {
+    $text = ConvertFrom-PsdUtf8 $bytes
+    if ($null -eq $text) {
         Add-PsdError $Ctx 'PSD606' "the file can't be edited, because it isn't valid UTF-8. Save it as UTF-8." -File (New-PsdFileRec $Path $null)
         return $null
     }
-    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
     $nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
     $tokens = $null; $errors = $null
     $ast = [Parser]::ParseInput($text, $Path, [ref]$tokens, [ref]$errors)

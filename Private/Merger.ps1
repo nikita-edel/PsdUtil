@@ -155,6 +155,13 @@ function Get-PsdNodeKindText {
     }
 }
 
+# What a list operator works on: a key set to $null counts as not there.
+function Get-PsdListBase {
+    param($Prev)
+    if ($null -ne $Prev -and $Prev.K -eq 'S' -and $null -eq $Prev.V) { return $null }
+    $Prev
+}
+
 function Invoke-PsdMergeOp {
     param($Out, $Op, $M)
     $k = $Op.Key
@@ -162,11 +169,11 @@ function Invoke-PsdMergeOp {
     $prev = $null
     if ($has) { $prev = $Out.V[$k] }
     $arg = ConvertTo-PsdNormal $Op.Arg $M $Op.Path
-    $shown = Format-PsdKeyText $k
     if ($null -ne $Op.Index -or $null -ne $Op.Match) {
         Invoke-PsdIndexOp $Out $Op $arg $prev $M
         return
     }
+    $shown = Format-PsdKeyText $k
 
     switch ($Op.Op) {
         '-=' {
@@ -220,8 +227,7 @@ function Invoke-PsdMergeOp {
             Set-PsdProv $M $Op.Path $arg $prev
         }
         default {
-            $base = $prev
-            if ($null -ne $base -and $base.K -eq 'S' -and $null -eq $base.V) { $base = $null }
+            $base = Get-PsdListBase $prev
             if ($null -ne $base -and $base.K -eq 'M') {
                 Add-PsdMergeError $M 'PSD210' "$($Op.Op) only works on lists, but $shown is a map." $Op @("To add keys to a map, write them: $k = @{ NewKey = ... }")
                 return
@@ -248,8 +254,7 @@ function Invoke-PsdIndexOp {
         Add-PsdMergeError $M 'PSD211' "'$written' needs `$true to remove that item." $Op @("Remove it: '$written' = `$true.")
         return
     }
-    $base = $Prev
-    if ($null -ne $base -and $base.K -eq 'S' -and $null -eq $base.V) { $base = $null }
+    $base = Get-PsdListBase $Prev
     if ($null -eq $base -and $Op.Op -ne '+=') {
         Add-PsdMergeError $M 'PSD212' "$shown doesn't exist, so '$written' has no item to work on." $Op @((Get-PsdDidYouMean $k $Out.V.PSBase.Keys))
         return
@@ -264,15 +269,6 @@ function Invoke-PsdIndexOp {
 
 function Test-PsdIfTrue {
     param($If, $M)
-    switch ($M.Mode) {
-        'None' { return $false }
-        'All' { return $true }
-    }
-    $doc = $M.Doc
-    if ($doc.Decisions.ContainsKey($If.Id)) { return $doc.Decisions[$If.Id] }
-    $doc.Decisions[$If.Id] = $false
-    $ev = @{ Doc = $doc.Prelim; Node = $If; InCond = $true; Final = $doc }
-    $r = Test-PsdCondition $If.Cond $ev
-    $doc.Decisions[$If.Id] = $r
-    $r
+    if ($M.Mode -eq 'All') { return $true }
+    [bool] $M.Doc.Decisions[$If.Id]
 }

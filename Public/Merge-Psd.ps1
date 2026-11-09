@@ -56,7 +56,7 @@ function Merge-Psd {
     )
     $ctx = New-PsdContext -Limits $Limits -Unresolved $UnresolvedReference
     if ($Loader) { $ctx.Loader = $Loader }
-    $layers = New-PsdList
+    $sources = New-PsdList
     $entry = $null
     $n = 0
     foreach ($item in $InputObject) {
@@ -64,23 +64,16 @@ function Merge-Psd {
         if ($item -is [string] -or $item -is [IO.FileInfo]) {
             $f = Read-PsdFile (Resolve-PsdUserPath ([string]$item)) $ctx
             if ($null -eq $f -or $null -eq $f.Root) { continue }
-            foreach ($l in (Get-PsdLayers $f $ctx)) { $layers.Add($l) }
+            $sources.Add(@{ File = $f })
             $entry = $f
         }
         elseif (Test-PsdMapLike $item) {
             $sf = New-PsdSyntheticFile "input $n" $null
             $sf.Root = ConvertFrom-PsdObject $item $sf $ctx '' -AllowName
-            $layers.Add((New-PsdLayer $sf))
+            $sources.Add(@{ Layer = (New-PsdLayer $sf) })
             if ($sf.Named) { $entry = $sf }
         }
         else { Add-PsdError $ctx 'PSD206' "input $n is $(Get-PsdKindText $item). Merge-Psd takes paths and maps." }
-    }
-    if ($Key) {
-        $have = New-PsdList
-        foreach ($l in $layers) { foreach ($x in (Get-PsdTopKeys $l.File.Root)) { $have.Add($x) } }
-        foreach ($k in $Key) {
-            if ($have -inotcontains $k) { Add-PsdError $ctx 'PSD207' "'$k' isn't a key in any of the inputs." -Hint @((Get-PsdDidYouMean $k $have)) }
-        }
     }
     if ($null -eq $entry) { $entry = New-PsdSyntheticFile 'merge' $null; $entry.Root = New-PsdMapNode $entry $null '' }
     # the schema is read before merging: Merge in it gives keys their default operator
@@ -88,9 +81,14 @@ function Merge-Psd {
     if ($Schema -and $ctx.Errors.Count -eq 0) { $rules = Import-PsdSchemaRules (Resolve-PsdUserPath $Schema) $ctx $null }
     $defaults = ConvertFrom-PsdMergeOption $Merge $ctx
     $value = $null
-    if ($layers.Count -gt 0 -and $ctx.Errors.Count -eq 0) {
-        $doc = New-PsdDoc $entry $layers $ctx $false $Include $rules $defaults
+    if ($sources.Count -gt 0 -and $ctx.Errors.Count -eq 0) {
+        $doc = New-PsdDoc $entry $sources $ctx $false $Include $rules $defaults
         if ($Key) {
+            $have = New-PsdList
+            foreach ($l in $doc.Layers) { foreach ($x in (Get-PsdTopKeys $l.File.Root)) { $have.Add($x) } }
+            foreach ($k in $Key) {
+                if ($have -inotcontains $k) { Add-PsdError $ctx 'PSD207' "'$k' isn't a key in any of the inputs." -Hint @((Get-PsdDidYouMean $k $have)) }
+            }
             # Everything is merged, so references still work. Only these keys are returned.
             $value = [ordered]@{}
             foreach ($k in $Key) {
