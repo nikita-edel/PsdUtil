@@ -179,7 +179,7 @@ function Write-PsdUnresolved {
     $msg = $Miss.Message
     if ($Ev.InCond -and $code -eq 'PSD301' -and $Miss.Op -and -not $Miss.Op.Ns -and $null -ne $Ev.Final -and (Test-PsdTreePath (Get-PsdAllTree $Ev.Final) $Miss.Op.Segs)) {
         $code = 'PSD401'
-        $msg = "this condition reads $(Format-PsdSegs $Miss.Op.Segs), but that is only set inside an !if, and conditions can't see inside an !if."
+        $msg = "this condition reads $(Format-PsdSegs $Miss.Op.Segs), but that is only set inside an !if that isn't true."
         $mode = 'Error'
     }
     if ($mode -eq 'Keep') { return $true }
@@ -399,14 +399,20 @@ function Get-PsdTreeChild {
     $null
 }
 
-function Test-PsdTreePath {
+# The node at a path, $null when the path isn't there.
+function Get-PsdTreeNode {
     param($Tree, $Segs)
     $cur = $Tree
     foreach ($seg in $Segs) {
-        if ($null -eq $cur) { return $false }
+        if ($null -eq $cur) { return $null }
         $cur = Get-PsdTreeChild $cur $seg
     }
-    $null -ne $cur
+    $cur
+}
+
+function Test-PsdTreePath {
+    param($Tree, $Segs)
+    $null -ne (Get-PsdTreeNode $Tree $Segs)
 }
 
 # Notes, for -Verbose, that a reference without name:: read a key of this file that includes have too: where the

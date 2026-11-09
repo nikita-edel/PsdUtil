@@ -19,6 +19,7 @@
         'Export-Psd'
         'Format-Psd'
         'Get-PsdError'
+        'Get-PsdLoadPlan'
         'Get-PsdMissingKey'
         'Get-PsdProvenance'
         'Get-PsdValue'

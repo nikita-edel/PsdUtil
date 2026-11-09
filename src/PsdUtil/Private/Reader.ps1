@@ -51,11 +51,31 @@ function New-PsdNode {
     $n
 }
 
+# Strict UTF-8: bytes that aren't UTF-8 give $null instead of being replaced. A BOM is dropped.
+function ConvertFrom-PsdUtf8 {
+    param([byte[]] $Bytes)
+    try { $text = (New-Object System.Text.UTF8Encoding $false, $true).GetString($Bytes) }
+    catch { return $null }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { return $text.Substring(1) }
+    $text
+}
+
+# Reports nesting past MaxDepth and returns the node that stands in for the value there.
+function New-PsdTooDeepNode {
+    param($File, $Ast, [string] $Path, $Ctx)
+    $deep = New-PsdNode 'S' $null $File $Ast $Path
+    Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $deep
+    $deep
+}
+
 function New-PsdMapNode {
     param($File, $Ast, [string] $Path)
     $n = New-PsdNode 'M' ([ordered]@{}) $File $Ast $Path
     $n.Ops = New-PsdList
     $n.Ifs = New-PsdList
+    # the '!merge' and '!include' of the body of an !if
+    $n.Merge = New-PsdList
+    $n.Include = New-PsdList
     $n
 }
 
@@ -165,12 +185,11 @@ function Read-PsdFile {
     if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $text = [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2) }
     elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $text = [Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2) }
     else {
-        try { $text = (New-Object System.Text.UTF8Encoding $false, $true).GetString($bytes) }
-        catch {
+        $text = ConvertFrom-PsdUtf8 $bytes
+        if ($null -eq $text) {
             Add-PsdError $Ctx 'PSD107' "the file isn't valid UTF-8. Save it as UTF-8." -File (New-PsdFileRec $full $null)
             return $null
         }
-        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
     }
     ConvertFrom-PsdText $text $full $Ctx
 }
@@ -289,11 +308,7 @@ function New-PsdStringNode {
 
 function ConvertFrom-PsdAst {
     param($Ast, $File, $Ctx, [string] $Path, [int] $Depth, [bool] $InIf)
-    if ($Depth -gt $Ctx.Limits.MaxDepth) {
-        $deep = New-PsdNode 'S' $null $File $Ast $Path
-        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $deep
-        return $deep
-    }
+    if ($Depth -gt $Ctx.Limits.MaxDepth) { return (New-PsdTooDeepNode $File $Ast $Path $Ctx) }
     if ($Ast -is [HashtableAst]) { return (ConvertFrom-PsdHashAst $Ast $File $Ctx $Path $Depth $false $InIf) }
     if ($Ast -is [ArrayExpressionAst] -or $Ast -is [ArrayLiteralAst]) {
         $items = New-PsdList
@@ -301,10 +316,10 @@ function ConvertFrom-PsdAst {
         $flat = $Ast -is [ArrayExpressionAst] -and $Ast.SubExpression.Statements.Count -eq 1
         foreach ($e in (Get-PsdArrayElements $Ast { param($st) Add-PsdReject $st $File $Ctx })) {
             if ($flat -and $e -is [ArrayExpressionAst]) {
-                foreach ($x in (ConvertFrom-PsdAst $e $File $Ctx $Path ($Depth + 1) $InIf).V) { $items.Add($x) }
+                foreach ($x in (ConvertFrom-PsdAst $e $File $Ctx $Path ($Depth + 1)).V) { $items.Add($x) }
                 continue
             }
-            $items.Add((ConvertFrom-PsdAst $e $File $Ctx (Join-PsdPath $Path ([int]$items.Count)) ($Depth + 1) $InIf))
+            $items.Add((ConvertFrom-PsdAst $e $File $Ctx (Join-PsdPath $Path ([int]$items.Count)) ($Depth + 1)))
         }
         return (New-PsdNode 'L' $items $File $Ast $Path)
     }
@@ -342,7 +357,8 @@ function ConvertFrom-PsdHashAst {
         $valueAst = Get-PsdStatementExpression $pair.Item2
         if ($null -eq $valueAst) { Add-PsdReject $pair.Item2 $File $Ctx; continue }
         $childPath = if ($kc.Kind -in 'Plain', 'Op') { Join-PsdPath $Path $kc.Name } else { $Path }
-        $value = ConvertFrom-PsdAst $valueAst $File $Ctx $childPath ($Depth + 1) ($InIf -or $kc.Kind -eq 'If')
+        # InIf: the body of an !if at the top of a file, where '!merge' and '!include' work
+        $value = ConvertFrom-PsdAst $valueAst $File $Ctx $childPath ($Depth + 1) ($kc.Kind -eq 'If' -and ($IsRoot -or $InIf))
         Add-PsdMapEntry $node $kc $value $File $Ctx $IsRoot $InIf
     }
     $node
@@ -437,10 +453,6 @@ function Add-PsdMapEntry {
                 Id = New-PsdId; Cond = $null; Body = $Value; File = $File; Line = $ki.Line; Col = $ki.Col; Text = $ki.Text
                 Offset = $Kc.CondOffset; Path = $Node.Path; Raw = $Kc.Cond; K = 'I'
             }
-            if ($InIf) {
-                Add-PsdKeyError $Ctx 'PSD206' "an !if can't contain another !if. Join the conditions with -and instead." $ki
-                return
-            }
             if ($Value.K -ne 'M') {
                 Add-PsdKeyError $Ctx 'PSD206' "an !if needs a map after it: '$($Kc.Cond)' = @{ ... }" $ki
                 return
@@ -453,6 +465,10 @@ function Add-PsdMapEntry {
             $Node.Ifs.Add($ifNode)
         }
         'Dir' {
+            if ($InIf -and $Kc.Name -in '!merge', '!include') {
+                Read-PsdDirective $Node $Kc.Name $Value $ki $Ctx
+                return
+            }
             if (-not $IsRoot) {
                 Add-PsdKeyError $Ctx 'PSD206' "'$($Kc.Name)' only works at the top level of a file." $ki
                 return
@@ -472,7 +488,8 @@ function Get-PsdPathStrings {
     param($Value, [string] $Directive, $Ctx, [string] $Shape)
     $out = New-PsdList
     foreach ($it in (Get-PsdNodeItems $Value)) {
-        if ($it.K -eq 'S' -and $it.V -is [string] -and $it.V.Length -gt 0) { $out.Add(@{ Path = $it.V; Only = $null; Node = $it }) }
+        if ($it.K -eq 'S' -and $it.V -is [string] -and $it.V.Length -gt 0) { $out.Add(@{ Path = $it.V; Only = $null; Node = $it; Ref = $null }) }
+        elseif ($it.K -eq 'T' -and $Directive -in '!merge', '!include') { $out.Add(@{ Path = $null; Only = $null; Node = $it; Ref = $it }) }
         elseif ($it.K -eq 'T') { Add-PsdNodeError $Ctx 'PSD206' "paths in '$Directive' can't contain references." $it }
         elseif ($Directive -eq '!merge' -and $it.K -eq 'M') {
             $spec = Read-PsdMergeMap $it $Ctx
@@ -494,7 +511,8 @@ function Read-PsdMergeMap {
         }
     }
     $p = $Item.V['Path']
-    if ($null -eq $p -or $p.K -ne 'S' -or $p.V -isnot [string]) {
+    $isRef = $null -ne $p -and $p.K -eq 'T'
+    if (-not $isRef -and ($null -eq $p -or $p.K -ne 'S' -or $p.V -isnot [string])) {
         Add-PsdNodeError $Ctx 'PSD206' "this needs a Path: @{ Path = './file.psd1'; Keys = 'A' }." $Item
         return $null
     }
@@ -506,7 +524,10 @@ function Read-PsdMergeMap {
             else { Add-PsdNodeError $Ctx 'PSD206' 'Keys has to be a key name or a list of key names.' $x; $ok = $false }
         }
     }
-    if ($ok) { @{ Path = $p.V; Only = $keys; Node = $Item } }
+    if ($ok) {
+        if ($isRef) { @{ Path = $null; Only = $keys; Node = $Item; Ref = $p } }
+        else { @{ Path = $p.V; Only = $keys; Node = $Item; Ref = $null } }
+    }
 }
 
 function Read-PsdDirective {
@@ -573,14 +594,10 @@ function Get-PsdKeptMap {
 }
 
 # AllowName: '!name' at the top works, for maps given to Merge-Psd. AllowDirective: every directive at the top
-# works, for files read through -Loader.
+# works, for files read through -Loader. InIf: the body of an !if at the top of such a file.
 function ConvertFrom-PsdObject {
-    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName, [switch] $AllowDirective)
-    if ($Depth -gt $Ctx.Limits.MaxDepth) {
-        $deep = New-PsdNode 'S' $null $File $null $Path
-        Add-PsdLimitError $Ctx 'MaxDepth' "by nesting at $Path" $deep
-        return $deep
-    }
+    param($Value, $File, $Ctx, [string] $Path, [int] $Depth = 0, [switch] $AllowName, [switch] $AllowDirective, [switch] $InIf)
+    if ($Depth -gt $Ctx.Limits.MaxDepth) { return (New-PsdTooDeepNode $File $null $Path $Ctx) }
     if ($null -eq $Value) { return (New-PsdNode 'S' $null $File $null $Path) }
     if ($Value -is [System.Collections.IDictionary]) {
         $node = New-PsdMapNode $File $null $Path
@@ -589,9 +606,11 @@ function ConvertFrom-PsdObject {
             $kc = Get-PsdKeyClass ([string]$k) $kinfo $Ctx
             if ($kc.Kind -eq 'Bad') { continue }
             $childPath = if ($kc.Kind -in 'Plain', 'Op') { Join-PsdPath $Path $kc.Name } else { $Path }
-            $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1)
+            $childInIf = $kc.Kind -eq 'If' -and ($InIf -or ($AllowDirective -and $Depth -eq 0))
+            $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1) -InIf:$childInIf
             if ($kc.Kind -eq 'Dir') {
-                if ($Depth -eq 0 -and ($AllowDirective -or ($AllowName -and $kc.Name -eq '!name'))) { Read-PsdDirective $File $kc.Name $child $kinfo $Ctx }
+                if ($InIf -and $kc.Name -in '!merge', '!include') { Read-PsdDirective $node $kc.Name $child $kinfo $Ctx }
+                elseif ($Depth -eq 0 -and ($AllowDirective -or ($AllowName -and $kc.Name -eq '!name'))) { Read-PsdDirective $File $kc.Name $child $kinfo $Ctx }
                 else { Add-PsdError $Ctx 'PSD206' "'$($kc.Name)' only works in files." -File $File -Key ([string]$k) }
                 continue
             }
@@ -608,9 +627,9 @@ function ConvertFrom-PsdObject {
     if ($Value -is [System.Management.Automation.PSCustomObject]) {
         $map = [ordered]@{}
         foreach ($p in $Value.PSObject.Properties) { $map[$p.Name] = $p.Value }
-        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective)
+        return (ConvertFrom-PsdObject $map $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective -InIf:$InIf)
     }
     $kept = Get-PsdKeptMap $Value
-    if ($null -ne $kept) { return (ConvertFrom-PsdObject $kept $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective) }
+    if ($null -ne $kept) { return (ConvertFrom-PsdObject $kept $File $Ctx $Path $Depth -AllowName:$AllowName -AllowDirective:$AllowDirective -InIf:$InIf) }
     New-PsdNode 'S' $Value $File $null $Path
 }

@@ -37,7 +37,7 @@ function Resolve-PsdPaths {
 
 function New-PsdLayer {
     param($File, $Only = $null)
-    @{ File = $File; Only = $Only; Root = $null }
+    @{ File = $File; Only = $Only; Root = $null; Via = $null }
 }
 
 function Test-PsdOnStack {
@@ -62,30 +62,35 @@ function Get-PsdTopKeys {
     if ($null -eq $Root) { return , $keys }
     foreach ($k in $Root.V.PSBase.Keys) { $keys.Add($k) }
     foreach ($op in $Root.Ops) { $keys.Add($op.Key) }
-    foreach ($if in $Root.Ifs) { foreach ($k in $if.Body.V.PSBase.Keys) { $keys.Add($k) }; foreach ($op in $if.Body.Ops) { $keys.Add($op.Key) } }
+    foreach ($if in $Root.Ifs) { foreach ($k in (Get-PsdTopKeys $if.Body)) { $keys.Add($k) } }
     , $keys
 }
 
-# The layers of a file's chain, bottom first: every !merge, then the file itself.
+# The layers of a file's chain, bottom first: every !merge that counts by now, then the file itself.
 function Get-PsdLayers {
-    param($File, $Ctx, $Stack)
+    param($File, $Ctx, $Doc, $Stack)
     $result = New-PsdList
     if ($null -eq $Stack) { $Stack = New-PsdList }
     $Stack.Add($File)
-    foreach ($m in $File.Merge) {
-        foreach ($p in (Resolve-PsdPaths $m.Path $File $m.Node $Ctx)) {
+    foreach ($active in (Get-PsdActiveEntries $File 'Merge' $Doc)) {
+        $m = $active.Entry
+        $path = Get-PsdEntryPath $m $Doc
+        if (-not $path) { continue }
+        foreach ($p in (Resolve-PsdPaths $path $File $m.Node $Ctx)) {
             if (Test-PsdOnStack $Stack (Get-PsdPathKey $p)) {
                 Add-PsdNodeError $Ctx 'PSD201' 'these files merge each other in a circle.' $m.Node -Extra @((Get-PsdChainText $Stack $p), '') -Hint @("Remove one of the '!merge' lines.")
                 continue
             }
             $sub = Read-PsdFile $p $Ctx $m.Node 'PSD200'
             if ($null -eq $sub -or $null -eq $sub.Root) { continue }
-            $subLayers = Get-PsdLayers $sub $Ctx $Stack
+            $subLayers = Get-PsdLayers $sub $Ctx $Doc $Stack
+            if ($null -ne $active.Via) { foreach ($l in $subLayers) { if ($null -eq $l.Via) { $l.Via = $active.Via } } }
             if ($m.Only) {
                 $have = New-PsdList
                 foreach ($l in $subLayers) { foreach ($x in (Get-PsdTopKeys $l.File.Root)) { $have.Add($x) } }
+                # before everything is decided, a key can still come from a file that isn't loaded yet
                 foreach ($want in $m.Only) {
-                    if ($have -inotcontains $want) {
+                    if ($Doc.Settled -and $have -inotcontains $want) {
                         Add-PsdNodeError $Ctx 'PSD207' "'$want' isn't a key in $($sub.Name + $sub.Ext)." $m.Node -Hint @((Get-PsdDidYouMean $want $have))
                     }
                 }
@@ -95,7 +100,9 @@ function Get-PsdLayers {
                         $keys = New-PsdList
                         foreach ($x in $l.Only) { if ($m.Only -icontains $x) { $keys.Add($x) } }
                     }
-                    $result.Add((New-PsdLayer $l.File $keys))
+                    $layer = New-PsdLayer $l.File $keys
+                    $layer.Via = $l.Via
+                    $result.Add($layer)
                 }
             }
             else { foreach ($l in $subLayers) { $result.Add($l) } }
@@ -115,6 +122,7 @@ function Get-PsdLayers {
             continue
         }
         $copy = New-PsdLayer $l.File
+        $copy.Via = $l.Via
         if ($l.Only) { $copy.Only = $l.Only.GetRange(0, $l.Only.Count) }
         $seen[$l.File.Key] = $copy
         $out.Add($copy)
@@ -136,10 +144,13 @@ function New-PsdDocObject {
         ResList   = New-PsdList
         RefDepth  = 0
         Own       = @{}
+        # the analysis step: true or false by !if, the text by path with a reference, and what it decided in order
         Decisions = @{}
+        Paths     = @{}
+        Steps     = $null
+        Settled   = $false
         Prov      = $null
         Tree      = $null
-        Prelim    = $null
         Final     = $null
         AllTree   = $null
         # schema rule of the top map, for Merge; -Merge as @{ Pattern; Op }
@@ -176,8 +187,7 @@ function Get-PsdIncludedDoc {
         Add-PsdNodeError $Ctx 'PSD201' 'these files include each other in a circle.' $Node -Extra @((Get-PsdChainText $Ctx.DocStack $File.Path), '') -Hint @("Remove one of the '!include' lines.")
         return $null
     }
-    $layers = Get-PsdLayers $File $Ctx
-    $doc = New-PsdDoc $File $layers $Ctx
+    $doc = New-PsdDoc $File @(@{ File = $File }) $Ctx
     $Ctx.Docs[$File.Key] = $doc
     $doc
 }
@@ -204,47 +214,24 @@ function Add-PsdMapIncludes {
         $f.Label = $name
         $f.Named = $true
         $f.Root = ConvertFrom-PsdObject $value $f $Ctx ''
-        $idoc = New-PsdDoc $f (Join-PsdList $null (New-PsdLayer $f)) $Ctx
+        $idoc = New-PsdDoc $f @(@{ Layer = (New-PsdLayer $f) }) $Ctx
         $Ctx.Docs[$f.Key] = $idoc
         Register-PsdNs $Doc $Doc.Inc $name $f $idoc $null $Ctx
     }
 }
 
+# Sources, in order: @{ File } for a file with its chain, @{ Layer } for one layer as it is.
 # Rules and Defaults give keys without an operator a default one, see Get-PsdDefaultOp. Included files get none.
 function New-PsdDoc {
-    param($Entry, $Layers, $Ctx, [bool] $Prov = $false, $Include = $null, $Rules = $null, $Defaults = $null)
+    param($Entry, $Sources, $Ctx, [bool] $Prov = $false, $Include = $null, $Rules = $null, $Defaults = $null)
     $Ctx.DocStack.Add($Entry)
-    $doc = New-PsdDocObject $Entry $Layers $Ctx
+    $doc = New-PsdDocObject $Entry $null $Ctx
     $doc.Rules = $Rules
     $doc.Defaults = $Defaults
     if ($Prov) { $doc.Prov = @{} }
-    foreach ($l in $Layers) {
-        $f = $l.File
-        if (-not $f.Synthetic -or $f.Named) { Register-PsdNs $doc $doc.Ns $f.Ns $f $f $null $Ctx }
-    }
-    foreach ($l in $Layers) {
-        foreach ($inc in $l.File.Include) {
-            foreach ($p in (Resolve-PsdPaths $inc.Path $l.File $inc.Node $Ctx)) {
-                $f = Read-PsdFile $p $Ctx $inc.Node 'PSD200'
-                if ($null -eq $f -or $null -eq $f.Root) { continue }
-                $idoc = Get-PsdIncludedDoc $f $Ctx $inc.Node
-                if ($null -ne $idoc) { Register-PsdNs $doc $doc.Inc $f.Ns $f $idoc $inc.Node $Ctx }
-            }
-        }
-    }
     if ($null -ne $Include) { Add-PsdMapIncludes $doc $Include $Ctx }
+    Resolve-PsdDocFiles $doc $Sources
     $Ctx.DocStack.RemoveAt($Ctx.DocStack.Count - 1)
-
-    # Conditions are decided against everything except the !if bodies.
-    $pre = New-PsdDocObject $Entry $Layers $Ctx
-    $pre.Ns = $doc.Ns
-    $pre.Inc = $doc.Inc
-    $pre.Mode = 'None'
-    $pre.Rules = $Rules
-    $pre.Defaults = $Defaults
-    $pre.Final = $doc
-    $pre.Tree = Merge-PsdLayers $pre $true
-    $doc.Prelim = $pre
     $doc.Tree = Merge-PsdLayers $doc $false
     $doc
 }
@@ -313,7 +300,8 @@ function Get-PsdAllTree {
 # Builds the document for a file, with an optional extra layer on top.
 function New-PsdFileDoc {
     param($Entry, $Ctx, $Override = $null, [switch] $Prov, $Include = $null, $Rules = $null, $Defaults = $null)
-    $layers = Get-PsdLayers $Entry $Ctx
+    $sources = New-PsdList
+    $sources.Add(@{ File = $Entry })
     if ($null -ne $Override) {
         if (-not ($Override -is [System.Collections.IDictionary] -or $null -ne (Get-PsdKeptMap $Override))) {
             Add-PsdError $Ctx 'PSD206' "-Override needs a map, or a generated class made from one, but it's $(Get-PsdKindText $Override)."
@@ -321,7 +309,7 @@ function New-PsdFileDoc {
         }
         $of = New-PsdSyntheticFile 'override' $Entry.Dir
         $of.Root = ConvertFrom-PsdObject $Override $of $Ctx ''
-        $layers.Add((New-PsdLayer $of))
+        $sources.Add(@{ Layer = (New-PsdLayer $of) })
     }
-    New-PsdDoc $Entry $layers $Ctx $Prov.IsPresent $Include $Rules $Defaults
+    New-PsdDoc $Entry $sources $Ctx $Prov.IsPresent $Include $Rules $Defaults
 }

@@ -305,6 +305,178 @@ Describe 'Conditions' {
     It 'use operators inside a body' {
         (Import-Text "@{ L = @('a'); '!if true' = @{ 'L +=' = @('b') } }").L -join ',' | Should -Be 'a,b'
     }
+
+    It 'can be nested, and the inner one is decided only when the outer one is true' {
+        $r = Import-Text "@{ A = 1; '!if !<A> -eq 1' = @{ B = 2; '!if !<A> -eq 1' = @{ C = 3; '!if false' = @{ D = 4 } } } }"
+        $r.B | Should -Be 2
+        $r.C | Should -Be 3
+        $r.Contains('D') | Should -BeFalse
+        (Import-Text "@{ '!if false' = @{ B = 2; '!if !<Missing>' = @{ C = 3 } } }").Contains('B') | Should -BeFalse
+    }
+
+    It 'can be nested in nested maps' {
+        (Import-Text "@{ A = @{ X = 1; '!if true' = @{ B = @{ '!if true' = @{ C = 2 } } } } }").A.B.C | Should -Be 2
+    }
+
+    It 'read keys set in another !if, in any order' {
+        $r = Import-Text "@{ '!if !<B> -eq 2' = @{ C = 3 }; A = `$true; '!if !<A>' = @{ B = 2 } }"
+        $r.C | Should -Be 3
+        $r = Import-Text "@{ A = `$true; '!if !<D>' = @{ E = 1 }; '!if !<C>' = @{ D = `$true }; '!if !<A>' = @{ C = `$true } }"
+        $r.E | Should -Be 1
+    }
+
+    It 'follow references to see what they read' {
+        $r = Import-Text "@{ A = `$true; X = '!<B ?? `"off`">'; '!if !<X> -eq `"on`"' = @{ Y = 1 }; '!if !<A>' = @{ B = 'on' } }"
+        $r.Y | Should -Be 1
+    }
+
+    It 'see the value set by another !if that is true' {
+        $r = Import-Text "@{ K = 'a'; A = `$true; '!if !<A>' = @{ K = 'b' }; '!if !<K> -eq `"a`"' = @{ Old = 1 }; '!if !<K> -eq `"b`"' = @{ New = 1 } }"
+        $r.Contains('Old') | Should -BeFalse
+        $r.New | Should -Be 1
+    }
+
+    It 'may read what their own body writes' {
+        $r = Import-Text "@{ K = 'a'; '!if !<K> -eq `"a`"' = @{ K = 'b'; Ran = 1 } }"
+        $r.K | Should -Be 'b'
+        $r.Ran | Should -Be 1
+    }
+
+    It 'treat keys of one map separately: Opt.A does not wait for Opt.B' {
+        $r = Import-Text "@{ Opt = @{ A = `$true }; '!if !<Opt.A>' = @{ Opt = @{ B = `$true } }; '!if !<Opt.B>' = @{ Done = 1 } }"
+        $r.Done | Should -Be 1
+    }
+}
+
+Describe "'!merge' and '!include' inside !if" {
+    It 'merges the file only when the condition is true' {
+        $text = "@{ Add = VALUE; '!if !<Add>' = @{ '!merge' = './extra.psd1' } }"
+        $more = @{ 'extra.psd1' = "@{ E = 1 }" }
+        (Import-Text $text.Replace('VALUE', '$true') $more).E | Should -Be 1
+        (Import-Text $text.Replace('VALUE', '$false') $more).Contains('E') | Should -BeFalse
+    }
+
+    It 'does not read a file behind a false condition, it may not exist' {
+        (Import-Text "@{ '!if false' = @{ '!merge' = './missing.psd1'; '!include' = './missing2.psd1' }; A = 1 }").A | Should -Be 1
+    }
+
+    It 'puts the file below the one that merges it, so that file wins' {
+        $r = Import-Text "@{ A = 'own'; '!if true' = @{ '!merge' = './e.psd1' } }" @{ 'e.psd1' = "@{ A = 'extra'; B = 'extra' }" }
+        $r.A | Should -Be 'own'
+        $r.B | Should -Be 'extra'
+    }
+
+    It 'comes after the normal !merge of the file' {
+        $r = Import-Text "@{ '!merge' = './a.psd1'; '!if true' = @{ '!merge' = './b.psd1' } }" @{ 'a.psd1' = "@{ K = 'a'; L = @('a') }"; 'b.psd1' = "@{ K = 'b'; 'L +=' = @('b') }" }
+        $r.K | Should -Be 'b'
+        $r.L -join ',' | Should -Be 'a,b'
+    }
+
+    It 'follows the chain of the merged file, with its own conditions' {
+        $r = Import-Text "@{ On = `$true; '!if !<On>' = @{ '!merge' = './a.psd1' } }" @{ 'a.psd1' = "@{ '!merge' = './b.psd1'; '!if !<On>' = @{ '!merge' = './c.psd1' } }"; 'b.psd1' = "@{ B = 1 }"; 'c.psd1' = "@{ C = 1 }" }
+        $r.B | Should -Be 1
+        $r.C | Should -Be 1
+    }
+
+    It 'works in a nested !if' {
+        $r = Import-Text "@{ '!if true' = @{ '!if true' = @{ '!merge' = './e.psd1' } } }" @{ 'e.psd1' = "@{ E = 1 }" }
+        $r.E | Should -Be 1
+    }
+
+    It 'loads files first, so other conditions see what those files set' {
+        $r = Import-Text "@{ '!if !<?Flag>' = @{ Seen = 1 }; '!if true' = @{ '!merge' = './e.psd1' } }" @{ 'e.psd1' = "@{ Flag = `$true }" }
+        $r.Seen | Should -Be 1
+    }
+
+    It 'allows a merged file to change what its own condition read' {
+        $r = Import-Text "@{ '!merge' = './b.psd1'; '!if !<S> -eq `"x`"' = @{ '!merge' = './e.psd1' } }" @{ 'b.psd1' = "@{ S = 'x' }"; 'e.psd1' = "@{ S = 'y'; T = 1 }" }
+        $r.S | Should -Be 'y'
+        $r.T | Should -Be 1
+    }
+
+    It 'reads -Include in the condition' {
+        $r = Import-Text "@{ '!if !<run::Stage> -eq `"prod`"' = @{ '!merge' = './p.psd1' } }" @{ 'p.psd1' = "@{ P = 1 }" } @{ Include = @{ run = @{ Stage = 'prod' } } }
+        $r.P | Should -Be 1
+    }
+
+    It 'includes a file only when the condition is true' {
+        $r = Import-Text "@{ '!if true' = @{ '!include' = './shared.psd1' }; S = '!<shared::K>' }" @{ 'shared.psd1' = "@{ K = 'v' }" }
+        $r.S | Should -Be 'v'
+    }
+
+    It 'works in a .ps1 read through -Loader, and a false branch never runs' {
+        $marker = Join-Path $TestDrive 'ran.txt'
+        $dir = New-TestFiles @{
+            'a.ps1' = "@{ On = `$true; '!if !<On>' = @{ '!merge' = './b.ps1' }; '!if false' = @{ '!merge' = './c.ps1' } }"
+            'b.ps1' = "@{ B = 1 }"
+            'c.ps1' = "Set-Content -LiteralPath '$marker' 'x'; @{ C = 1 }"
+        }
+        $r = Import-Psd (Join-Path $dir 'a.ps1') -Loader { param($Path) & $Path }
+        $r.B | Should -Be 1
+        $r.Contains('C') | Should -BeFalse
+        Test-Path -LiteralPath $marker | Should -BeFalse
+    }
+
+    It 'is an error in a map given to Merge-Psd' {
+        $dir = New-TestFiles @{}
+        Get-ErrorCode { Merge-Psd @{ '!if true' = @{ '!merge' = './x.psd1' } } } $dir | Should -Contain 'PSD206'
+    }
+
+    It 'checks Keys only after all files are loaded' {
+        $r = Import-Text "@{ '!merge' = @{ Path = './a.psd1'; Keys = 'K' } }" @{ 'a.psd1' = "@{ '!if true' = @{ K = 1 } }" }
+        $r.K | Should -Be 1
+    }
+
+    It 'gives PSD201 for a circle through a condition' {
+        $dir = New-TestFiles @{ 'a.psd1' = "@{ '!if true' = @{ '!merge' = './b.psd1' } }"; 'b.psd1' = "@{ '!merge' = './a.psd1' }" }
+        Get-ErrorCode { Import-Psd ./a.psd1 } $dir | Should -Contain 'PSD201'
+    }
+
+    It 'gives PSD200 for a missing file behind a true condition' {
+        $dir = New-TestFiles @{ 'a.psd1' = "@{ '!if true' = @{ '!merge' = './no.psd1' } }" }
+        Get-ErrorCode { Import-Psd ./a.psd1 } $dir | Should -Contain 'PSD200'
+    }
+}
+
+Describe 'References in paths' {
+    It 'work in !merge' {
+        $r = Import-Text "@{ Stage = 'prod'; '!merge' = './!<Stage>.psd1' }" @{ 'prod.psd1' = "@{ P = 1 }" }
+        $r.P | Should -Be 1
+    }
+
+    It 'work in !include and with Keys' {
+        $r = Import-Text "@{ N = 'x'; '!include' = './!<N>.psd1'; V = '!<x::K>' }" @{ 'x.psd1' = "@{ K = 'v' }" }
+        $r.V | Should -Be 'v'
+        $r = Import-Text "@{ N = 'x'; '!merge' = @{ Path = './!<N>.psd1'; Keys = 'K' } }" @{ 'x.psd1' = "@{ K = 'v'; Other = 1 }" }
+        $r.K | Should -Be 'v'
+        $r.Contains('Other') | Should -BeFalse
+    }
+
+    It 'read -Include' {
+        $r = Import-Text "@{ '!merge' = './!<run::Stage>.psd1' }" @{ 'prod.psd1' = "@{ P = 1 }" } @{ Include = @{ run = @{ Stage = 'prod' } } }
+        $r.P | Should -Be 1
+    }
+
+    It 'wait for a condition that writes what they read' {
+        $r = Import-Text "@{ '!merge' = './!<F>.psd1'; F = 'a'; A = `$true; '!if !<A>' = @{ F = 'b' } }" @{ 'a.psd1' = "@{ V = 'a' }"; 'b.psd1' = "@{ V = 'b' }" }
+        $r.V | Should -Be 'b'
+    }
+
+    It 'work inside an !if' {
+        $r = Import-Text "@{ N = 'x'; '!if true' = @{ '!merge' = './!<N>.psd1' } }" @{ 'x.psd1' = "@{ K = 1 }" }
+        $r.K | Should -Be 1
+    }
+
+    It 'give PSD301 for a missing key and PSD200 for a missing file' {
+        $dir = New-TestFiles @{ 'a.psd1' = "@{ '!merge' = './!<Nope>.psd1' }"; 'b.psd1' = "@{ N = 'no'; '!merge' = './!<N>.psd1' }" }
+        Get-ErrorCode { Import-Psd ./a.psd1 } $dir | Should -Contain 'PSD301'
+        Get-ErrorCode { Import-Psd ./b.psd1 } $dir | Should -Contain 'PSD200'
+    }
+
+    It 'stay an error in !schema' {
+        $dir = New-TestFiles @{ 'a.psd1' = "@{ N = 'x'; '!schema' = './!<N>.psd1' }" }
+        Get-ErrorCode { Import-Psd ./a.psd1 } $dir | Should -Contain 'PSD206'
+    }
 }
 
 Describe 'Files' {

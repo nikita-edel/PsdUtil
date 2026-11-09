@@ -35,7 +35,9 @@ BeforeDiscovery {
         @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ '!merge' = 5 }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ A = @{ '!merge' = './x.psd1' } }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ '!if true' = 1 }" }; Run = { Import-Psd ./main.psd1 } }
-        @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ '!if true' = @{ '!if false' = @{} } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ '!if true' = @{ '!name' = 'x' } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ A = @{ '!if true' = @{ '!merge' = './x.psd1' } } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD206'; Files = @{ 'main.psd1' = "@{ T = 5; '!merge' = '!<T>' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD207'; Files = @{ 'main.psd1' = "@{ '!merge' = @{ Path = './a.psd1'; Keys = 'Nope' } }"; 'a.psd1' = '@{ A = 1 }' }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD208'; Files = @{ 'main.psd1' = "@{ '!merge' = 'https://example.com/a.psd1' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ 'Plugins ++' = @('x') }" }; Run = { Import-Psd ./main.psd1 } }
@@ -98,8 +100,10 @@ BeforeDiscovery {
 
         # Conditions
         @{ Code = 'PSD400'; Files = @{ 'main.psd1' = "@{ A = 1; '!if !<A> -eq' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
-        @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$true; '!if !<A>' = @{ B = 1 }; '!if !<B>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
-        @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$true; '!if !<A>' = @{ L = @(1) }; '!if !<L[0]>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$false; '!if !<A>' = @{ B = 1 }; '!if !<B>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD401'; Files = @{ 'main.psd1' = "@{ A = `$false; '!if !<A>' = @{ L = @(1) }; '!if !<L[0]>' = @{ C = 1 } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD404'; Files = @{ 'main.psd1' = "@{ A = `$true; B = `$true; '!if !<A>' = @{ B = `$false }; '!if !<B>' = @{ A = `$false } }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD405'; Files = @{ 'main.psd1' = "@{ '!merge' = './base.psd1'; '!if !<S> -eq `"x`"' = @{ '!merge' = './a.psd1' }; '!if !<B>' = @{ '!merge' = './late.psd1' } }"; 'base.psd1' = "@{ S = 'x'; B = `$true }"; 'a.psd1' = '@{ }'; 'late.psd1' = "@{ S = 'y' }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD402'; Files = @{ 'main.psd1' = "@{ M = @{ A = 1 }; '!if !<M> -gt 1' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD403'; Files = @{ 'main.psd1' = "@{ A = 'x'; '!if !<A> -match ""(""' = @{} }" }; Run = { Import-Psd ./main.psd1 } }
 

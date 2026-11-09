@@ -265,7 +265,32 @@ If the condition is true, the contents are added to the map the `!if` sits in. A
 
 Operators: `-eq -ne -gt -ge -lt -le -in -like -match -and -or -not`, and `( )`. Comparisons ignore case.
 
-A condition sees the settings from all files, but nothing inside any `!if`. A value in a later file still beats an `!if` in an earlier one.
+An `!if` can hold another `!if`. The inner one is only looked at when the outer one is true.
+
+A condition sees the settings from all files that are loaded, and what other true `!if` set. Conditions are decided in the order that makes this work, not in the order they are written. A value in a later file still beats an `!if` in an earlier one.
+
+A condition can read what its own body writes: it sees the value from before. Two conditions that read what the other writes are an error (PSD404).
+
+### Files in conditions
+
+`'!merge'` and `'!include'` work in an `!if` at the top level of a file. The file goes where a normal `'!merge'` would, below the file that merges it and after its normal `'!merge'`. A file behind a false condition is never read.
+
+```powershell
+@{
+    Opt = @{ AddPS7 = $true }
+    '!if !<Opt.AddPS7>' = @{ '!merge' = './ps7.psd1' }
+}
+```
+
+Paths in `'!merge'` and `'!include'` can have references, also in `@{ Path = '...' }`:
+
+```powershell
+'!merge' = './!<run::Stage>.psd1'
+```
+
+A decision is final. If a file loaded later would change what an earlier decision read, and that changes the result, it's an error (PSD405).
+
+`Get-PsdLoadPlan ./app.psd1` shows the files in merge order, and each decision with what it read.
 
 ## Schemas
 
@@ -426,7 +451,7 @@ last.psd1, line 13: 'Prot' doesn't exist under Server in base.psd1.
 | PSD100–108 | reading a file |
 | PSD200–212 | merging, including, directives, operators |
 | PSD300–313 | references and filters |
-| PSD400–403 | conditions |
+| PSD400–405 | conditions |
 | PSD500–515 | schemas |
 | PSD600–607 | writing and editing |
 | PSD700 | a limit was reached |
