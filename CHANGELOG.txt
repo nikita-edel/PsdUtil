@@ -1,3 +1,8 @@
+## 0.2.0
+
+- add a way to replace, insert, delete an element of a list at an index
+- add a way to replace, remove a singular element based on index by value
+
 ## 0.1.0
 
 - initial release

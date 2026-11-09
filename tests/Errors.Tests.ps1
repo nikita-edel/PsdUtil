@@ -43,6 +43,33 @@ BeforeDiscovery {
         @{ Code = 'PSD211'; Files = @{ 'main.psd1' = "@{ Old = 1; 'Old -=' = `$false }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ 'Old -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
         @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L -=' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[0] =+' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[0] |=' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ L = @{ A = 1 }; 'L[0] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ L = 'text'; 'L[0] +=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ T = 'text'; L = '!<T>'; 'L[0] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD211'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[0] -=' = `$false }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD211'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[0] -=' = 'a' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[1] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[-2] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[1] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[-2] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @(); 'L[0] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ 'L[0] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ 'L[0] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = `$null; 'L[0] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''a''] +=' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''a''] =+' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD209'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''a''] |=' = @('b') }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ L = @{ a = 1 }; 'L[''a''] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ L = 'a'; 'L[''a''] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD210'; Files = @{ 'main.psd1' = "@{ T = 'a'; L = '!<T>'; 'L[''a''] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD211'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''a''] -=' = `$false }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''b''] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @('a'); 'L[''b''] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ L = @(); 'L[''a''] -=' = `$true }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD212'; Files = @{ 'main.psd1' = "@{ 'L[''a''] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
+        @{ Code = 'PSD305'; Files = @{ 'main.psd1' = "@{ T = 'a'; L = @('a'); 'L[''!<T>''] :=' = 'x' }" }; Run = { Import-Psd ./main.psd1 } }
 
         # References
         @{ Code = 'PSD300'; Files = @{ 'main.psd1' = "@{ A = 1; B = '!<A' }" }; Run = { Import-Psd ./main.psd1 } }

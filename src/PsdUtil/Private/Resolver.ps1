@@ -443,6 +443,10 @@ function Resolve-PsdOp {
         Add-PsdError $ctx $code $msg -File $Node.File -Line $Node.Line -Column $Node.Col -Length $Node.KeyLen -Key $Node.Path
     }
 
+    if ($null -ne $Node.Index -or $null -ne $Node.Match) {
+        $result = Resolve-PsdIndexOp $Node $base $arg $argItems $err
+        return , $result
+    }
     if ($base -is [System.Collections.IDictionary]) {
         if ($Node.Op -ne '-=') { & $err 'PSD210' "$($Node.Op) only works on lists, but $shown is a map."; return , $base }
         $out = [ordered]@{}
@@ -473,5 +477,50 @@ function Resolve-PsdOp {
             }
         }
     }
+    , $items
+}
+
+# Runs an operator with an index: ':=' replaces the item, '-=' removes it, '+=' inserts before it.
+# ':=' and '-=' need an item at that index, 0 is the first and -1 the last.
+# '+=' always works: -1 is the end, -2 before the last item, and an index past either end is that end.
+# With a value instead of an index, ':=' and '-=' work on every item that equals it, and one has to.
+function Resolve-PsdIndexOp {
+    param($Node, $Base, $Arg, $ArgItems, $Err)
+    if ($Base -is [System.Collections.IDictionary]) {
+        & $Err 'PSD210' "an index only works on lists, but $($Node.Path) is a map."
+        return , $Base
+    }
+    if ($null -ne $Base -and -not (Test-PsdList $Base)) {
+        & $Err 'PSD210' "an index only works on lists, but $($Node.Path) is $(Get-PsdKindText $Base)."
+        return , $Base
+    }
+    $items = New-PsdList
+    foreach ($x in $Base) { $items.Add($x) }
+    if ($null -ne $Node.Match) {
+        $hit = $false
+        for ($j = $items.Count - 1; $j -ge 0; $j--) {
+            if (Test-PsdEqual $items[$j] $Node.Match) {
+                $hit = $true
+                if ($Node.Op -eq ':=') { $items[$j] = $Arg } else { $items.RemoveAt($j) }
+            }
+        }
+        if (-not $hit) { & $Err 'PSD212' "$(Format-PsdValueShort $Node.Match) isn't in $($Node.Path)." }
+        return , $items
+    }
+    $count = $items.Count
+    $i = $Node.Index
+    if ($Node.Op -eq '+=') {
+        if ($i -lt 0) { $i = $count + 1 + $i }
+        if ($i -lt 0) { $i = 0 }
+        if ($i -gt $count) { $i = $count }
+        foreach ($a in $ArgItems) { $items.Insert($i, $a); $i++ }
+        return , $items
+    }
+    if ($i -lt 0) { $i += $count }
+    if ($i -lt 0 -or $i -ge $count) {
+        & $Err 'PSD212' "$($Node.Path)[$($Node.Index)] doesn't exist, because $($Node.Path) has $count item(s)."
+        return , $items
+    }
+    if ($Node.Op -eq ':=') { $items[$i] = $Arg } else { $items.RemoveAt($i) }
     , $items
 }

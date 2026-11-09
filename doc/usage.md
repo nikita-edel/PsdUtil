@@ -141,6 +141,27 @@ They go after the key, with a space before them.
 
 They also work within one file: plain keys go first, then operators from top to bottom. For a nested key, nest the map: `Server = @{ 'Ports +=' = @(443) }`.
 
+With an index after the key, an operator works on one place of a list:
+
+```powershell
+'Plugins[1] :=' = 'y'           # replace the item at index 1
+'Plugins[1] -=' = $true         # remove the item at index 1
+'Plugins[1] +=' = @('x', 'y')   # insert before index 1
+```
+
+- 0 is the first item. `:=` and `-=` take -1 for the last item, -2 for the one before it. They give an error when there is no item at that index.
+- `+=` always works. -1 inserts at the end, -2 before the last item. An index past the end inserts at the end, one before the start at the start. On a key that doesn't exist or is `$null`, it makes the list.
+- Each one sees the list as the operators before it left it, so a removal moves the items after it.
+- `=+` and `|=` don't take an index. A key without an operator, `'Plugins[1]'`, is a plain key with that name.
+
+With a value in quotes instead of an index, `:=` and `-=` work on every item that equals it. Items are compared like in `-=`: text ignores case, and only text equals text. It's an error when no item equals it. `+=`, `=+` and `|=` don't take a value.
+
+```powershell
+"Plugins['old'] :=" = 'new'     # replace every 'old' with 'new'
+"Plugins['old'] -=" = $true     # remove every 'old'
+'Plugins[''old''] -=' = $true   # the same, in a single-quoted key
+```
+
 ### Default operators
 
 A key written without an operator can get one by default, from `-Merge` or from `Merge` in the schema:

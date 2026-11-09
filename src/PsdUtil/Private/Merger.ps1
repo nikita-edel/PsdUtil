@@ -24,7 +24,7 @@ function Merge-PsdMap {
             $emptyPrev = $prev.K -eq 'S' -and $null -eq $prev.V
             $fits = ($op -eq ':=' -and $v.K -eq 'M') -or ($op -in '+=', '=+', '|=' -and $v.K -eq 'L' -and ($prev.K -in 'L', 'O' -or $emptyPrev))
             if ($fits) {
-                Invoke-PsdMergeOp $out @{ Key = $k; Op = $op; Arg = $v; File = $v.File; Line = $v.KeyLine; Col = $v.KeyCol; Len = $v.KeyLen; Text = [string]$k; Path = $cp } $M
+                Invoke-PsdMergeOp $out @{ Key = $k; Op = $op; Index = $null; Match = $null; Arg = $v; File = $v.File; Line = $v.KeyLine; Col = $v.KeyCol; Len = $v.KeyLen; Text = [string]$k; Path = $cp } $M
                 continue
             }
         }
@@ -139,6 +139,8 @@ function New-PsdOpNode {
     $n.KeyLine = $Op.Line; $n.KeyCol = $Op.Col; $n.KeyLen = $Op.Len
     $n.Base = $Base
     $n.Op = $Op.Op
+    $n.Index = $Op.Index
+    $n.Match = $Op.Match
     $n.Arg = $Arg
     $n
 }
@@ -161,6 +163,10 @@ function Invoke-PsdMergeOp {
     if ($has) { $prev = $Out.V[$k] }
     $arg = ConvertTo-PsdNormal $Op.Arg $M $Op.Path
     $shown = Format-PsdKeyText $k
+    if ($null -ne $Op.Index -or $null -ne $Op.Match) {
+        Invoke-PsdIndexOp $Out $Op $arg $prev $M
+        return
+    }
 
     switch ($Op.Op) {
         '-=' {
@@ -228,6 +234,32 @@ function Invoke-PsdMergeOp {
             Set-PsdProv $M $Op.Path $Out.V[$k] $prev
         }
     }
+}
+
+# An operator with an index or a value, like 'X[1] :='. Checks what is known now; the list is worked on when the key is resolved,
+# because only then is its length known: it can be a reference or the result of other operators.
+function Invoke-PsdIndexOp {
+    param($Out, $Op, $Arg, $Prev, $M)
+    $k = $Op.Key
+    $shown = Format-PsdKeyText $k
+    $place = if ($null -ne $Op.Match) { "'$($Op.Match)'" } else { $Op.Index }
+    $written = "$k[$place] $($Op.Op)"
+    if ($Op.Op -eq '-=' -and -not ($Arg.K -eq 'S' -and $Arg.V -is [bool] -and $Arg.V)) {
+        Add-PsdMergeError $M 'PSD211' "'$written' needs `$true to remove that item." $Op @("Remove it: '$written' = `$true.")
+        return
+    }
+    $base = $Prev
+    if ($null -ne $base -and $base.K -eq 'S' -and $null -eq $base.V) { $base = $null }
+    if ($null -eq $base -and $Op.Op -ne '+=') {
+        Add-PsdMergeError $M 'PSD212' "$shown doesn't exist, so '$written' has no item to work on." $Op @((Get-PsdDidYouMean $k $Out.V.PSBase.Keys))
+        return
+    }
+    if ($null -ne $base -and $base.K -in 'M', 'S') {
+        Add-PsdMergeError $M 'PSD210' "an index only works on lists, but $shown is $(Get-PsdNodeKindText $base)." $Op
+        return
+    }
+    $Out.V[$k] = New-PsdOpNode $base $Op $Arg
+    Set-PsdProv $M $Op.Path $Out.V[$k] $Prev
 }
 
 function Test-PsdIfTrue {
