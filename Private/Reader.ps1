@@ -28,6 +28,7 @@ function New-PsdFileRec {
         Root      = $null
         Merge     = New-PsdList
         Include   = New-PsdList
+        DirOps    = New-PsdList
         Schema    = $null
         Types     = New-PsdList
         Synthetic = $false
@@ -73,9 +74,8 @@ function New-PsdMapNode {
     $n = New-PsdNode 'M' ([ordered]@{}) $File $Ast $Path
     $n.Ops = New-PsdList
     $n.Ifs = New-PsdList
-    # the '!merge' and '!include' of the body of an !if
-    $n.Merge = New-PsdList
-    $n.Include = New-PsdList
+    # the operators on '!merge' and '!include' of the body of an !if
+    $n.DirOps = New-PsdList
     $n
 }
 
@@ -364,7 +364,38 @@ function ConvertFrom-PsdHashAst {
     $node
 }
 
-# Decides what a key is: a plain key, a merge operator, an !if, a directive.
+# Takes an index or a value in [ ] off the name of a key with an operator. 'X[1] :=' works on one place of the list X,
+# 'X[''b''] :=' on the items that equal b. Without an operator, 'X[1]' stays a plain key.
+function Set-PsdKeyPlace {
+    param($Kc, $Err)
+    $im = $script:PsdRxIndexKey.Match($Kc.Name)
+    if ($im.Success) {
+        if ($Kc.Op -notin ':=', '-=', '+=') {
+            & $Err 'PSD209' "'$($Kc.Op)' can't be used with an index." @('With an index: := replaces the item, -= removes it, += inserts before it.')
+            return
+        }
+        $Kc.Name = $im.Groups[1].Value
+        $text = $im.Groups[2].Value
+        $index = 0
+        # an index too big for an int is past the end of any list
+        if (-not [int]::TryParse($text, [Globalization.NumberStyles]::AllowLeadingSign, $script:PsdInvariant, [ref]$index)) {
+            $index = if ($text.StartsWith('-')) { [int]::MinValue } else { [int]::MaxValue }
+        }
+        $Kc.Index = $index
+        return
+    }
+    $vm = $script:PsdRxValueKey.Match($Kc.Name)
+    if ($vm.Success) {
+        if ($Kc.Op -notin ':=', '-=') {
+            & $Err 'PSD209' "'$($Kc.Op)' can't be used with a value in [ ]." @('With a value: := replaces the items that equal it, -= removes them.')
+            return
+        }
+        $Kc.Name = $vm.Groups[1].Value
+        $Kc.Match = if ($vm.Groups[2].Success) { $vm.Groups[2].Value.Replace("''", "'") } else { $vm.Groups[3].Value.Replace('""', '"') }
+    }
+}
+
+# Decides what a key is: a plain key, a merge operator, an !if, a directive, an operator on a directive.
 function Get-PsdKeyClass {
     # Ctx is used inside the error script block below.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Ctx')]
@@ -387,6 +418,15 @@ function Get-PsdKeyClass {
         }
         $lower = $Key.ToLowerInvariant()
         if ($script:PsdDirectives -contains $lower) { $kc.Kind = 'Dir'; $kc.Name = $lower; return $kc }
+        $m = $script:PsdRxOp.Match($lower)
+        if ($m.Success -and $m.Groups[1].Value -match '^!(merge|include)(\[.*\])?$') {
+            $kc.Kind = 'DirOp'
+            $kc.Name = $Key.Substring(0, $m.Groups[1].Length)
+            $kc.Op = $m.Groups[2].Value
+            Set-PsdKeyPlace $kc $err
+            $kc.Name = $kc.Name.ToLowerInvariant()
+            return $kc
+        }
         $dym = Get-PsdDidYouMean $Key ($script:PsdDirectives + '!if')
         & $err 'PSD205' "'$Key' isn't a directive." @($dym, "Directives are !merge, !include, !name, !schema and !if. A real key that starts with ! is written '!$Key'.")
         return $kc
@@ -400,33 +440,7 @@ function Get-PsdKeyClass {
         $kc.Kind = 'Op'
         $kc.Name = $m.Groups[1].Value
         $kc.Op = $m.Groups[2].Value
-        # 'X[1] :=' works on one place of the list X. Without an operator, 'X[1]' stays a plain key.
-        $im = $script:PsdRxIndexKey.Match($kc.Name)
-        if ($im.Success) {
-            if ($kc.Op -notin ':=', '-=', '+=') {
-                & $err 'PSD209' "'$($kc.Op)' can't be used with an index." @('With an index: := replaces the item, -= removes it, += inserts before it.')
-                return $kc
-            }
-            $kc.Name = $im.Groups[1].Value
-            $text = $im.Groups[2].Value
-            $index = 0
-            # an index too big for an int is past the end of any list
-            if (-not [int]::TryParse($text, [Globalization.NumberStyles]::AllowLeadingSign, $script:PsdInvariant, [ref]$index)) {
-                $index = if ($text.StartsWith('-')) { [int]::MinValue } else { [int]::MaxValue }
-            }
-            $kc.Index = $index
-            return $kc
-        }
-        # 'X[''b''] :=' works on the items of the list X that equal b.
-        $vm = $script:PsdRxValueKey.Match($kc.Name)
-        if ($vm.Success) {
-            if ($kc.Op -notin ':=', '-=') {
-                & $err 'PSD209' "'$($kc.Op)' can't be used with a value in [ ]." @('With a value: := replaces the items that equal it, -= removes them.')
-                return $kc
-            }
-            $kc.Name = $vm.Groups[1].Value
-            $kc.Match = if ($vm.Groups[2].Success) { $vm.Groups[2].Value.Replace("''", "'") } else { $vm.Groups[3].Value.Replace('""', '"') }
-        }
+        Set-PsdKeyPlace $kc $err
         return $kc
     }
     $m = $script:PsdRxNearOp.Match($name)
@@ -466,7 +480,7 @@ function Add-PsdMapEntry {
         }
         'Dir' {
             if ($InIf -and $Kc.Name -in '!merge', '!include') {
-                Read-PsdDirective $Node $Kc.Name $Value $ki $Ctx
+                Add-PsdPlainDirectiveError $Ctx $Kc.Name $ki
                 return
             }
             if (-not $IsRoot) {
@@ -474,6 +488,11 @@ function Add-PsdMapEntry {
                 return
             }
             Read-PsdDirective $File $Kc.Name $Value $ki $Ctx
+        }
+        'DirOp' {
+            if ($IsRoot) { Read-PsdDirectiveOp $File $Kc $Value $ki $Ctx }
+            elseif ($InIf) { Read-PsdDirectiveOp $Node $Kc $Value $ki $Ctx }
+            else { Add-PsdKeyError $Ctx 'PSD206' "'$($Kc.Name) $($Kc.Op)' only works at the top level of a file, or in an !if there." $ki }
         }
     }
 }
@@ -528,6 +547,28 @@ function Read-PsdMergeMap {
         if ($isRef) { @{ Path = $null; Only = $keys; Node = $Item; Ref = $p } }
         else { @{ Path = $p.V; Only = $keys; Node = $Item; Ref = $null } }
     }
+}
+
+function Add-PsdPlainDirectiveError {
+    param($Ctx, [string] $Name, $KInfo)
+    Add-PsdKeyError $Ctx 'PSD206' "'$Name' can't be written without an operator inside an !if." $KInfo -Hint @("Add to it: '$Name +=' = '...'. Replace it: '$Name :=' = '...'.")
+}
+
+# An operator on '!merge' or '!include'. Target is the file, or the body of an !if in it. It runs when the files are followed.
+function Read-PsdDirectiveOp {
+    param($Target, $Kc, $Value, $KInfo, $Ctx)
+    $isPlace = $null -ne $Kc.Index -or $null -ne $Kc.Match
+    $all = $Kc.Op -eq '-=' -and $Value.K -eq 'S' -and $Value.V -is [bool] -and $Value.V
+    if ($Kc.Op -eq '-=' -and $isPlace -and -not $all) {
+        Add-PsdKeyError $Ctx 'PSD211' "'$($KInfo.Text.Trim("'", '"'))' needs `$true to remove that item." $KInfo
+        return
+    }
+    $items = New-PsdList
+    if (-not $all) {
+        foreach ($x in (Get-PsdPathStrings $Value $Kc.Name $Ctx "a path, a list of paths, or @{ Path = '...'; Keys = 'A', 'B' }")) { $items.Add($x) }
+    }
+    $kind = if ($Kc.Name -eq '!merge') { 'Merge' } else { 'Include' }
+    $Target.DirOps.Add(@{ Kind = $kind; Name = $Kc.Name; Op = $Kc.Op; Index = $Kc.Index; Match = $Kc.Match; Items = $items; All = $all; Info = $KInfo })
 }
 
 function Read-PsdDirective {
@@ -608,8 +649,14 @@ function ConvertFrom-PsdObject {
             $childPath = if ($kc.Kind -in 'Plain', 'Op') { Join-PsdPath $Path $kc.Name } else { $Path }
             $childInIf = $kc.Kind -eq 'If' -and ($InIf -or ($AllowDirective -and $Depth -eq 0))
             $child = ConvertFrom-PsdObject $Value[$k] $File $Ctx $childPath ($Depth + 1) -InIf:$childInIf
+            if ($kc.Kind -eq 'DirOp') {
+                if ($InIf) { Read-PsdDirectiveOp $node $kc $child $kinfo $Ctx }
+                elseif ($Depth -eq 0 -and $AllowDirective) { Read-PsdDirectiveOp $File $kc $child $kinfo $Ctx }
+                else { Add-PsdError $Ctx 'PSD206' "'$($kc.Name) $($kc.Op)' only works in files." -File $File -Key ([string]$k) }
+                continue
+            }
             if ($kc.Kind -eq 'Dir') {
-                if ($InIf -and $kc.Name -in '!merge', '!include') { Read-PsdDirective $node $kc.Name $child $kinfo $Ctx }
+                if ($InIf -and $kc.Name -in '!merge', '!include') { Add-PsdPlainDirectiveError $Ctx $kc.Name $kinfo }
                 elseif ($Depth -eq 0 -and ($AllowDirective -or ($AllowName -and $kc.Name -eq '!name'))) { Read-PsdDirective $File $kc.Name $child $kinfo $Ctx }
                 else { Add-PsdError $Ctx 'PSD206' "'$($kc.Name)' only works in files." -File $File -Key ([string]$k) }
                 continue

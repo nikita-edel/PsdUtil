@@ -3,12 +3,13 @@
 # it reads. Files behind a true !if are loaded as it goes. Files behind a false !if are never read, because reading a
 # .ps1 through -Loader runs it.
 
-# The '!merge' or '!include' entries of a file that count now: its own, then those of the true !if in it.
-# Returns @{ Entry; Via }. Via has the ids of the !if the entry is inside of, or is $null.
+# The '!merge' or '!include' entries of a file that count now: what it wrote, changed by its operators, then by
+# the operators of the true !if in it. Returns @{ Entry; Via }. Via has the ids of the !if an entry came from, or is $null.
 function Get-PsdActiveEntries {
     param($File, [string] $Kind, $Doc)
     $out = New-PsdList
     foreach ($e in $File.$Kind) { $out.Add(@{ Entry = $e; Via = $null }) }
+    foreach ($op in $File.DirOps) { if ($op.Kind -eq $Kind) { Invoke-PsdEntryOp $op $Doc $null $out } }
     if ($null -ne $File.Root) { Add-PsdIfEntries $File.Root $Kind $Doc @() $out }
     , $out
 }
@@ -18,8 +19,77 @@ function Add-PsdIfEntries {
     foreach ($if in $Map.Ifs) {
         if (-not $Doc.Decisions[$if.Id]) { continue }
         $owners = @($Via) + $if.Id
-        foreach ($e in $if.Body.$Kind) { $Out.Add(@{ Entry = $e; Via = $owners }) }
+        foreach ($op in $if.Body.DirOps) { if ($op.Kind -eq $Kind) { Invoke-PsdEntryOp $op $Doc $owners $Out } }
         Add-PsdIfEntries $if.Body $Kind $Doc $owners $Out
+    }
+}
+
+# True when the entry has this path. A path with a reference that isn't decided yet equals nothing.
+function Test-PsdEntryPath {
+    param($Item, [string] $Path, $Doc)
+    $own = Get-PsdEntryPath $Item.Entry $Doc
+    $null -ne $own -and [string]::Equals($own, $Path, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# Runs one operator on the entries, with the rules of the list operators. A missing item is an error only once
+# everything is decided: before that, an !if that adds it may still be open.
+function Invoke-PsdEntryOp {
+    param($Op, $Doc, $Via, $Out)
+    $new = @(foreach ($e in $Op.Items) { @{ Entry = $e; Via = $Via } })
+    $missing = {
+        param($what)
+        if ($Doc.Settled) { Add-PsdKeyError $Doc.Ctx 'PSD212' "$what isn't in $($Op.Name), so it can't be changed." $Op.Info }
+    }
+    if ($null -ne $Op.Match) {
+        $hit = $false
+        for ($j = $Out.Count - 1; $j -ge 0; $j--) {
+            if (Test-PsdEntryPath $Out[$j] $Op.Match $Doc) {
+                $hit = $true
+                $Out.RemoveAt($j)
+                if ($Op.Op -eq ':=') { $Out.InsertRange($j, [object[]] $new) }
+            }
+        }
+        if (-not $hit) { & $missing "'$($Op.Match)'" }
+        return
+    }
+    if ($null -ne $Op.Index) {
+        $i = $Op.Index
+        $count = $Out.Count
+        if ($Op.Op -eq '+=') {
+            if ($i -lt 0) { $i = $count + 1 + $i }
+            $Out.InsertRange([Math]::Max(0, [Math]::Min($i, $count)), [object[]] $new)
+            return
+        }
+        if ($i -lt 0) { $i += $count }
+        if ($i -lt 0 -or $i -ge $count) { & $missing "[$($Op.Index)]"; return }
+        $Out.RemoveAt($i)
+        if ($Op.Op -eq ':=') { $Out.InsertRange($i, [object[]] $new) }
+        return
+    }
+    switch ($Op.Op) {
+        ':=' { $Out.Clear(); $Out.AddRange([object[]] $new) }
+        '+=' { $Out.AddRange([object[]] $new) }
+        '=+' { $Out.InsertRange(0, [object[]] $new) }
+        '|=' {
+            foreach ($n in $new) {
+                $path = Get-PsdEntryPath $n.Entry $Doc
+                $have = $false
+                foreach ($x in $Out) { if ($null -ne $path -and (Test-PsdEntryPath $x $path $Doc)) { $have = $true; break } }
+                if (-not $have) { $Out.Add($n) }
+            }
+        }
+        '-=' {
+            if ($Op.All) { $Out.Clear(); return }
+            foreach ($n in $new) {
+                $path = Get-PsdEntryPath $n.Entry $Doc
+                if ($null -eq $path) { continue }
+                $hit = $false
+                for ($j = $Out.Count - 1; $j -ge 0; $j--) {
+                    if (Test-PsdEntryPath $Out[$j] $path $Doc) { $hit = $true; $Out.RemoveAt($j) }
+                }
+                if (-not $hit) { & $missing "'$path'" }
+            }
+        }
     }
 }
 
@@ -82,7 +152,7 @@ function New-PsdOpenItem {
 # True when the body of an !if loads a file, so what it writes can't be known yet.
 function Test-PsdMapLoads {
     param($Map)
-    if ($Map.Merge.Count) { return $true }
+    foreach ($op in $Map.DirOps) { if ($op.Kind -eq 'Merge') { return $true } }
     foreach ($if in $Map.Ifs) { if (Test-PsdMapLoads $if.Body) { return $true } }
     $false
 }
