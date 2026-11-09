@@ -5,7 +5,7 @@ BeforeAll {
 Describe 'Get-PsdLoadPlan' {
     It 'lists the files in merge order and each decision with what it read' {
         $dir = New-TestFiles @{
-            'a.psd1' = "@{ '!merge' = './base.psd1'; On = `$true; '!if !<On>' = @{ Mode = 'x'; '!merge' = './extra.psd1' }; '!if !<Mode> -eq `"x`"' = @{ Y = 1 }; '!if false' = @{ '!merge' = './no.psd1' } }"
+            'a.psd1' = "@{ '!merge' = './base.psd1'; On = `$true; '!if !<On>' = @{ Mode = 'x'; '!merge +=' = './extra.psd1' }; '!if !<Mode> -eq `"x`"' = @{ Y = 1 }; '!if false' = @{ '!merge +=' = './no.psd1' } }"
             'base.psd1' = "@{ B = 1 }"
             'extra.psd1' = "@{ E = 1 }"
         }

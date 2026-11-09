@@ -3,7 +3,7 @@
 - add a way to replace, insert, delete an element of a list at an index
 - add a way to replace, remove a singular element based on index by value
 - an !if can hold another !if
-- '!merge' and '!include' work in an !if at the top level of a file, a file behind a false !if is never read
+- '!merge' and '!include' are edited with the list operators, also in an !if at the top level of a file, a file behind a false !if is never read
 - references work in the paths of '!merge' and '!include'
 - conditions are decided in the order that makes them see what other true !if set, new errors PSD404 and PSD405
 - add Get-PsdLoadPlan: the files in merge order and every decision

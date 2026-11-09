@@ -273,14 +273,24 @@ A condition can read what its own body writes: it sees the value from before. Tw
 
 ### Files in conditions
 
-`'!merge'` and `'!include'` work in an `!if` at the top level of a file. The file goes where a normal `'!merge'` would, below the file that merges it and after its normal `'!merge'`. A file behind a false condition is never read.
+`'!merge'` and `'!include'` are edited like any list, with the operators, also in an `!if` at the top level of a file. A file behind a false condition is never read. The files still go below the file that merges them.
 
 ```powershell
 @{
+    '!merge' = @('./base.psd1', './old.psd1')
     Opt = @{ AddPS7 = $true }
-    '!if !<Opt.AddPS7>' = @{ '!merge' = './ps7.psd1' }
+    '!if !<Opt.AddPS7>' = @{
+        '!merge +=' = './ps7.psd1'                  # add at the end
+        '!merge =+' = './first.psd1'                # add at the start
+        '!merge |=' = './base.psd1'                 # add when it's not there yet
+        '!merge -=' = './old.psd1'                  # remove by path; $true removes all of them
+        '!merge[0] :=' = './other.psd1'             # by index: := replaces, -= removes ($true), += inserts
+        "!merge['./base.psd1'] -=" = $true          # by path in [ ]: := replaces, -= removes
+    }
 }
 ```
+
+`'!merge :='` replaces the whole list. Inside an `!if` an operator is required: a plain `'!merge'` is an error. Paths are compared as they are written.
 
 Paths in `'!merge'` and `'!include'` can have references, also in `@{ Path = '...' }`:
 
